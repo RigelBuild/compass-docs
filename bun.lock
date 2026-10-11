@@ -7,8 +7,8 @@
       "dependencies": {
         "@astrojs/check": "0.9.10",
         "@astrojs/starlight": "0.41.8",
-        "@rigelbuild/design-ledger-gate": "1.0.0",
-        "@rigelbuild/dl-claim": "1.0.0",
+        "@rigelbuild/design-ledger-gate": "1.0.1",
+        "@rigelbuild/dl-claim": "1.0.1",
         "@rigelbuild/ref-gate": "1.0.0",
         "astro": "7.2.4",
         "github-slugger": "2.0.0",
@@ -289,9 +289,9 @@
 
     "@poppinss/exception": ["@poppinss/exception@1.2.3", "", {}, "sha512-dCED+QRChTVatE9ibtoaxc+WkdzOSjYTKi/+uacHWIsfodVfpsueo3+DKpgU5Px8qXjgmXkSvhXvSCz3fnP9lw=="],
 
-    "@rigelbuild/design-ledger-gate": ["@rigelbuild/design-ledger-gate@1.0.0", "", { "bin": { "design-ledger-gate": "index.ts" } }, "sha512-y7WnPTTMIJB8tVv9y+VjUH1rlESujhD3WsEzG1LoujI7hTGrSA29Gg75zlEBJV7dup17TZQ3nl3C4AXeCXEZPw=="],
+    "@rigelbuild/design-ledger-gate": ["@rigelbuild/design-ledger-gate@1.0.1", "", { "bin": { "design-ledger-gate": "index.ts" } }, "sha512-CEIKTotMDSjEtVMYxTH8pGe5HU2BJWuOgpACubSpQLTczg9S2J6Ze06owi52q/mvSR3mP0d7QUatXSbQVY7w5w=="],
 
-    "@rigelbuild/dl-claim": ["@rigelbuild/dl-claim@1.0.0", "", { "dependencies": { "@rigelbuild/design-ledger-gate": "1.0.0" }, "bin": { "dl-claim": "index.ts" } }, "sha512-dWbogMNYfUAA0geSBSYoPimwRdhMD4nmwqffMTCYAZgOy8BRJRDeAKvBaA940b17JJU5EYsaKCaHs1Bpt2Y7Pw=="],
+    "@rigelbuild/dl-claim": ["@rigelbuild/dl-claim@1.0.1", "", { "dependencies": { "@rigelbuild/design-ledger-gate": "1.0.1" }, "bin": { "dl-claim": "index.ts" } }, "sha512-kiTBWqEhdVwN1xhjhIEM7fcNKiYsG6GR3BC109L5Ozr3M5HOrkB2mJpy87rzyrRa93RqkaCgCu/QxtkKIoikgg=="],
 
     "@rigelbuild/ref-gate": ["@rigelbuild/ref-gate@1.0.0", "", { "bin": { "ref-gate": "index.ts" } }, "sha512-ZWq24B8dYrCzC0O/QjLIFL9PhbBSjaDdJ6ZOvYyVk2IzY+icK9jDdwAgne9Ylg7UqgA2ywgUjWuBtbr7kko/tg=="],
 
