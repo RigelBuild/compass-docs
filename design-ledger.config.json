@@ -1,0 +1,15 @@
+{
+	"designsRoot": "docs/designs",
+	"surfaceDepth": 1,
+	"counter": {
+		"url": "https://dl.rigel.build",
+		"partition": "compass"
+	},
+	"legs": {
+		"citations": true,
+		"errata": true,
+		"recordLinks": true,
+		"mainIds": true
+	},
+	"exemptBranchPrefixes": ["renovate/", "trunk-merge/"]
+}

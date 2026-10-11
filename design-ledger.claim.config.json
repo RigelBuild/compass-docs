@@ -1,0 +1,9 @@
+{
+	"designsRoot": "docs/designs",
+	"surfaceDepth": 1,
+	"surfaces": ["designs"],
+	"counter": {
+		"url": "https://dl.rigel.build",
+		"partition": "compass"
+	}
+}
