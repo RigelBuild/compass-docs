@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build markdown tools and policy
+        run: |
+          rumdl="$(nix build --no-link --print-out-paths .#rumdl)"
+          biome="$(nix build --no-link --print-out-paths .#biome)"
+          base_config="$(nix build --no-link --print-out-paths .#rumdl-base-config)"
+          echo "$rumdl/bin" >> "$GITHUB_PATH"
+          echo "$biome/bin" >> "$GITHUB_PATH"
+          echo "RUMDL_BASE_CONFIG=$base_config/rumdl/base.toml" >> "$GITHUB_ENV"
+
+      - name: Build Bun from the pinned nixpkgs
+        run: |
+          bun="$(nix build --no-link --print-out-paths --inputs-from . nixpkgs#bun)"
+          echo "$bun/bin" >> "$GITHUB_PATH"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Test
+        run: bun test
+
+      - name: Markdown lint
+        run: rumdl check .
+
+      - name: Biome
+        run: biome ci .
+
+      - name: Design ledger gate
+        run: bun run gate
+        # The gate reads the PR body, branch, and files through gh on pull_request.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+
+      - name: Public reference gate
+        run: bun run ref-gate
+
+      - name: Build site
+        run: bun run build

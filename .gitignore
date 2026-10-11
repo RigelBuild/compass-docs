@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.astro/
+.devenv/
+site/dist/
+site/.astro/
+site/node_modules/
+.direnv/
+site/src/content/docs/
+site/src/sidebar.generated.ts
+.rumdl_cache/
+node_modules/.cache/
+result
+result-*
