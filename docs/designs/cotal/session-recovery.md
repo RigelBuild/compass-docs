@@ -1001,12 +1001,14 @@ that flag `git apply` exits 128 with `No valid patches in input`, so the cleanes
 be the one that could not be restored.
 
 The index diff is applied with `--index` and the worktree diff without it, and the order matters.
+<!-- rumdl-disable MD038 -->
 `--index` on the first apply is what puts the staged content back in the index rather than only in
 the worktree; the second apply then lays the unstaged remainder on top. Applied this way a mixed
 tree restores byte-identically: a source reporting `MM README` and ` M tracked.txt` restores to the
 same two lines, with the same worktree bytes and the same `git diff --cached` output. Applied as a
 single combined diff, the same source restores as ` M README`, which is a different repository state
 wearing the same file contents.
+<!-- rumdl-enable MD038 -->
 
 The restore refuses a `$ROOT` it would have to clobber, and that is why it stages. `git clone` onto
 an existing nonempty directory exits 128, and on host B `$ROOT` is the seat's `cwd`, which may

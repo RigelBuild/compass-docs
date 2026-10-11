@@ -289,7 +289,7 @@ on the auth-service uid.
 
 Two requests, one socket:
 
-```
+```text
 sign-user
   name:        JWT name (the profile label mintCreds already passes to encodeUser)
   userPub:     user nkey public id
@@ -847,7 +847,7 @@ arms run as the agent uid, which is the child's uid after the spawn drop.
    `signingSeed` field with length greater than zero. Do not dump the file; query existence
    only. Assign the workspace root and the account-record path before python runs:
 
-   ```bash
+```bash
    ROOT=$(getent passwd cotal-manager | cut -d: -f6)
    ACCOUNT_RECORD="$ROOT/.cotal/auth/account.<hex>.json"
    sudo -u cotal-manager python3 -c \
@@ -867,7 +867,7 @@ raise SystemExit(0)' \
    # must print 0. 2 means this uid could not open the record. 3 means the record still
    # carries a signingSeed: stop, finish §6, rotate if that copy was ever readable by
    # another uid.
-   ```
+```
 
 4. Positive control: mint still works through the socket.
 
@@ -933,7 +933,7 @@ raise SystemExit(0)' \
    command later expands. Each arm writes a distinct sentinel on stderr and a distinct
    exit status, so a readable leaked seed cannot be mistaken for a failed open:
 
-   ```bash
+```bash
    sudo nsenter -t "$pid" -m -- sudo -u cotal-agent python3 -c \
      'import json,sys
 p=sys.argv[1]
@@ -956,7 +956,7 @@ raise SystemExit(0)' \
    # EMPTY / 0 means the record was readable but signingSeed was empty (migration
    # happened; isolation of this file is still incomplete). LEAK / 3 is a stolen
    # seed: stop, rotate (§4.2). UNPARSEABLE / 2 is a broken record, not a pass.
-   ```
+```
 
 6. Negative control: the agent child cannot dial the signer.
 

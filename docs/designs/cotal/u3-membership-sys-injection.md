@@ -237,7 +237,7 @@ observations make the replacement strictly stronger than what it replaces:
 
 Proposed replacement, both paths:
 
-```
+```text
 accountId := expectedAccount                              // from the daemon's own delivery cred
 assert connzAccountOf(observer) == accountId              // local, pre-connect, names both sides
 ```

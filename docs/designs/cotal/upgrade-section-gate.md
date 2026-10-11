@@ -136,7 +136,7 @@ the release range for the renewal refusal text operators hit (`carries no issuan
 must-be-absent control returning zero. It carries its `!`. Replaying the gate over `v0.48.2..v0.49.0`
 exits 1 and refuses, naming 2 breaking commits and no new section:
 
-```
+```text
 $ node scripts/upgrade-section-gate.mjs --range v0.48.2..v0.49.0
 upgrade-section-gate v0.48.2..v0.49.0
   breaking: 36d177951 feat(core)!: bind hosted runs to the caller's issued authority (#1395)

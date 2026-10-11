@@ -45,7 +45,7 @@ U2 does not re-prove that. U2 makes the re-render *safe to race*.
 `serverConfig` (`packages/core/src/provision.ts:2465-2531`) takes `(broker, spaces[], opts)` and
 returns config text. It emits a whole-broker `resolver: MEMORY` map:
 
-```
+```text
 resolver: MEMORY
 resolver_preload: { <space accounts> , <sys> , <extraAccounts> }
 ```
@@ -107,7 +107,7 @@ All three assume one broker process serving N spaces on one root, i.e. the F4 to
 
 ### R1 — two concurrent space adds (**the plan's gate**)
 
-```
+```text
  W1: read inventory {alpha}          W2: read inventory {alpha}
  W1: write account.beta.json         W2: write account.gamma.json
  W1: render preload {alpha,beta}     W2: render preload {alpha,gamma}
@@ -325,7 +325,7 @@ expires rather than wedging the broker forever.
 re-checks it and *aborts* rather than trusting it, and why the CAS fences below, not the lease, are
 what make the outcome correct.
 
-```
+```text
 0. acquire writer lease         create-only CAS in the TTL bucket; loss ⇒ REFUSE (§4)
                                 keep the value written as `leaseId` — steps 5-7 re-check THIS id
 1. read inventory               get → { value, revision }
@@ -650,7 +650,7 @@ Both directions can evict. `--adopt-kv` stops preloading every `disk-only` space
 drops every `kv-only` name from the list, and if that name's record is also absent from disk the
 space is gone from the broker. So before doing anything, `reconcile` prints:
 
-```
+```text
 --adopt-kv will EVICT 2 spaces (their creds stop connecting immediately after the reload):
     delta    (account.delta.json present on disk, not in the broker list)
     epsilon  (account.epsilon.json present on disk, not in the broker list)
@@ -724,6 +724,7 @@ this codebase rather than to a general notion, so that "we handled the torn writ
 claim about a specific window rather than a reassuring phrase.
 
 ### TORN READ
+
 A set reconstructed by *scanning* while the thing scanned is moving: entries added or removed
 between the first and last read produce a set that never existed at any instant.
 **Anchor:** `kv-scan.ts:63-72` documents exactly this — a scan over a moving tail is not a snapshot.
@@ -732,6 +733,7 @@ per-space layout would require reconstructing the set by scan on every render, w
 construction, and JetStream offers no multi-key transaction to avoid it.
 
 ### TORN WRITE / LOST UPDATE
+
 Two writers each read, each compute a correct result from what they read, and each write — and the
 second write erases the first, with neither writer's own logic ever being wrong.
 **Anchor:** `provision.ts:2409-2411`, the W4 note in the renderer itself: *"the MEMORY resolver is
@@ -742,6 +744,7 @@ why an atomic file write alone does not fix it, and why the fence is a CAS at st
 rather than an atomic rename at step 6 on the bytes.
 
 ### SILENT EVICTION
+
 A tenant that exists everywhere an operator would look — on disk, in `accountInventory`, in
 `cotal status` — but is absent from the promoted `resolver_preload` map. Its credentials are refused
 by the broker with **nothing printed anywhere**, by either side.
@@ -752,6 +755,7 @@ rollback once proven and §7 enumerates the blast radius by name: an eviction no
 strictly worse than a refusal everybody can.
 
 ### RESURRECTION
+
 A stale render promoted into a running broker re-admits a space that was deliberately removed, and
 credentials that were revoked connect again and work.
 **Anchor:** race R3, and U1's `preloadSpaceAccounts` (`auth-paths.ts:915-929` @ `6e634f1`), whose
@@ -764,6 +768,7 @@ sticks". Closed among cooperative writers by §3.4's step-6 abort-before-rename 
 SIGHUP (§3.4, "Read-side scope").
 
 ### PROMOTED-BUT-UNCOMMITTED
+
 Bytes have been renamed over `server.conf` and may already have been loaded by the broker, but no
 generation has been committed to record it. The durable state says one thing and the running process
 may say another.
@@ -775,6 +780,7 @@ because the broker may already be serving the new config and rolling back would 
 EVICTION of a tenant that is connected right now.
 
 ### UNPROVEN RELOAD
+
 A `SIGHUP` was sent and no success line was observed. Not a failure — an *absence*, which is the
 point: the config may be live, may not be, and the process that sent the signal cannot tell.
 **Anchor:** `isolated-broker.ts:444-460` — the existing shape refuses on
@@ -784,6 +790,7 @@ absent (`:458-459`). A reload that cannot be proven is a failure, never a maybe.
 `appliedGeneration`. The field means "proven", so only the step that read the proof line may set it.
 
 ### FAIL-CLOSED ON UNCERTAINTY
+
 When the tenant set is not knowable, refuse the whole broker-wide operation rather than proceeding
 with the part that is known. Proceeding renders a config missing whoever could not be read, and per
 SILENT EVICTION, missing *is* revoked.

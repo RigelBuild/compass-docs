@@ -214,7 +214,7 @@ P1 second, consuming the shared foundation unchanged. If P1 needs the foundation
 signal the foundation was wrong for P7 too, and it comes back here rather than growing a second
 idiom in the P1 series.
 
-**Series P7**
+### Series P7
 
 0. The probe of §6, BEFORE the series starts (§7.3). DONE — its outcome fixed the remedy wording that
    rule 4 and §2.1 both name, so it was a precondition of commit 1 rather than a step in it.
@@ -248,7 +248,7 @@ idiom in the P1 series.
    rather than `.cotal/space.*`, since unlike `clean` it runs on a root other tenants keep using.
 5. The lifecycle doc's §7 P7 entry gains `delivery.creds`, per §3.2.
 
-**Series P1**
+### Series P1
 
 1. `agentCredsDir` and the key builders take a space; `agentSecretKeysUnder` reads one level deeper;
    `agentSecretKeyForFile` needs the space to build a key and its signature changes with it. Removal
