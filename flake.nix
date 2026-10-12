@@ -3,10 +3,8 @@
 
   inputs = {
     nixpkgs.url = "github:cachix/devenv-nixpkgs/rolling";
-    meissa = {
-      url = "github:RigelBuild/meissa/329ad720c1ed1ee7bd84cf6f27375405b8b1e823";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
+    # Not following nixpkgs: consumers share meissa's exact linter derivations.
+    meissa.url = "github:RigelBuild/meissa/ced58ed79cccd0c2b25253f9812d070ef5bd31f1";
   };
 
   outputs = { nixpkgs, meissa, ... }:
