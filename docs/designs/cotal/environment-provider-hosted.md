@@ -1,6 +1,6 @@
 # Hosted environment provider contract
 
-Status: proposed implementation contract. This document extends the generic environment seam so one
+Proposed implementation contract. This document extends the generic environment seam so one
 manager can drive a local microVM provider or a hosted provider over HTTPS. It does not put provider
 API concepts on the Cotal wire.
 

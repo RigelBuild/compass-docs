@@ -1,6 +1,6 @@
 # U2 — resolver-inventory CAS
 
-**Status:** design, Phase 1. Nothing here is implemented. Review gate: this doc is approved
+Design, Phase 1. Nothing here is implemented. Review gate: this doc is approved
 before any code lands.
 
 **Revision 2** — folds the `rev_u2doc_glm` adversarial review (2 blockers, approve withheld) in

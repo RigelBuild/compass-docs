@@ -1,6 +1,6 @@
 # Design note: the upgrade-section gate
 
-**Status:** proposed, alongside `docs/UPGRADING.md` (see #1578).
+Proposed alongside `docs/UPGRADING.md` (see #1578).
 **Scope:** one CI check, `scripts/upgrade-section-gate.mjs`, run as `smoke:upgrade-section`.
 
 ## The problem it addresses
