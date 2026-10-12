@@ -4,7 +4,7 @@ A design record, not shipped behavior. Every current-behavior claim names the fi
 was read from; everything else is proposed. Pi paths are `@earendil-works/pi-coding-agent` 0.79.10
 `dist/`.
 
-**Status:** draft. Implements RIG-4293 option 1 with the RIG-4543 boundaries and the RIG-4669 seat
+Implements RIG-4293 option 1 with the RIG-4543 boundaries and the RIG-4669 seat
 root Matt approved, on Linux only (RIG-4707; see Resolved decisions). Managed Cotal Pi seats
 disable Pi's automatic provider retry before the first provider turn. Operator sessions are
 unchanged, and overflow compaction stays host-owned. PR #37 (RIG-4249) stays draft until this
