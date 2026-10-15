@@ -106,8 +106,8 @@ skips it.
 | Anything else | Not handled. |
 
 - **Wrap** follows the ruling ("cycles").
-- **Enter and Space.** `RefLink` opens through `openExternal`, then calls
-  `preventDefault()` and `stopPropagation()`. The card does not select and the
+- **Enter and Space.** `RefLink` calls `preventDefault()` and
+  `stopPropagation()`, then opens through `openExternal`. The card does not select and the
   dispatcher never sees the key.
 - **Exit** uses the owner, not the stored cursor. They differ after a pointer
   focuses a ref. The exit computes its target from `owner.id`, writes the
