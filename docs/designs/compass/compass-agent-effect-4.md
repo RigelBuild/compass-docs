@@ -15,8 +15,8 @@ Ledger-impact: DL-524.
 
 1. **Are the G1–G4 replacements acceptable?** (load-bearing) They are
    grounded in the installed `effect@4.0.5` declarations and a local spike, not
-   ruled. **Recommendation:** approve them as written; approving this PR
-   records that.
+   ruled. Matt rules on this and Open Question 2 in RIG-5478.
+   **Recommendation:** approve them as written.
 2. **Effect 4 `ManagedRuntime.dispose` interrupts `runFork` fibers.**
    (load-bearing) In v4, `ManagedRuntime.make` runs every `runFork` fiber in
    a child scope, and `dispose` says "Closing fiberScope interrupts and awaits
@@ -87,10 +87,14 @@ renames and moves are below; the four gaps follow.
 
 ### API map
 
-Each Effect 4 name below is declared in `effect@4.0.5`'s `dist/<Module>.d.ts`
-(for example `Effect.result` in `dist/Effect.d.ts`, `Queue.sizeUnsafe` in
-`dist/Queue.d.ts`, `TestClock` in `dist/testing/TestClock.d.ts`). The gap
-sections quote the declarations they depend on.
+Every Effect 4 symbol in this table and the gaps resolves to an
+`export declare const` in `effect@4.0.5`'s `dist/<Module>.d.ts`: `Effect.result`,
+`andThen`, `forkChild`, `yieldNow`; `Result.isSuccess`; `Clock.Clock`;
+`Metric.update`, `withAttributes`, `exponentialBoundaries`; `Queue.offerUnsafe`,
+`sizeUnsafe`, `takeUnsafe`; `Cause.findErrorOption`; `Scope.provide`;
+`Logger.layer`, `tracerLogger`; `Schedule.recurs`, `modifyDelay`; and `layer` in
+`dist/testing/TestClock.d.ts`. `updateUnsafe` is a member of the `Metric`
+interface: `(input: Input, context: Context.Context<never>) => void`.
 
 | Effect 3 | Effect 4 | Where |
 | -- | -- | -- |
@@ -126,8 +130,8 @@ failing `runtime.runFork`, and that the log is an event on the exported span.
 
 **G2. `Queue.takeUpTo` is gone, and `Queue.takeAll` now blocks while empty.**
 `dist/Queue.d.ts` documents `takeAll` as "Takes all currently available
-messages, waiting until at least one message" and types it
-`Effect<Arr.NonEmptyArray<A>, E>`. `takeBatch` in `publish-spine.ts` must
+messages, waiting until at least one message is available when the queue is
+empty" and types it `Effect<Arr.NonEmptyArray<A>, E>`.
 never block: the pump already waits on the wake latch. Read
 `Queue.sizeUnsafe(traceQ)`, then take `min(size, room)`
 frames with `Queue.takeUnsafe`. The producer is synchronous and the pump is
@@ -158,9 +162,10 @@ Effect 4 augments the global `Error` interface from `ErrorReporter.d.ts` and
 those augmentations through `Error` and reports four effect files, although
 compass-agent exports no effect type. The walk skips declarations inside a
 `declare global` block only for those two files, and asserts the skipped set
-equals that allowlist, so a new augmentation turns the test red. The test
-still fails when a transport export names an effect type; the PR shows that
-by a mutation check.
+equals that allowlist. Any other global augmentation is walked like any other
+declaration, so one that names an effect type fails the leak check. The test
+still fails when a transport export names an effect type; the PR shows both
+by mutation checks.
 
 ## Alternatives considered
 
