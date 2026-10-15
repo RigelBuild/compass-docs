@@ -17,6 +17,28 @@ Ledger-impact: DL-524.
    grounded in the installed `effect@4.0.5` declarations and a local spike, not
    ruled. **Recommendation:** approve them as written; approving this PR
    records that.
+2. **Effect 4 `ManagedRuntime.dispose` interrupts `runFork` fibers.**
+   (load-bearing) In v4, `ManagedRuntime.make` runs every `runFork` fiber in
+   a child scope, and `dispose` says "Closing fiberScope interrupts and awaits
+   every managed fiber" (`effect/dist/ManagedRuntime.js`). v3 did not. The
+   publish-spine and control-source pumps are `runtime.runFork` fibers, and
+   the parent says the spine pump is never interrupted. The normal shutdown
+   in `cli.ts` drains `storage` and `sink` before `transport.close()`. The
+   pinned-model refusal in `cli.ts` closes with no drain. It runs after
+   `createAgentSession`, which on a resumed session appends an interrupted-turn
+   abort record (`sessionManager.appendMessage(interruptedTurnAbort)` in the
+   SDK's `sdk.ts`) through the tee storage. So a durable frame can be in
+   flight there, and v4 now interrupts it.
+   - **A. Drain before close on the refusal path too.** Run the same
+     `storage.drain()` then `sink.drain()` before `transport.close()`. Test: a
+     resumed session with an interrupted turn and an unresolved pinned model
+     commits the abort frame before close.
+   - **B. Keep v3 behavior.** Fork both pumps with
+     `Effect.runForkWith(context)` outside the runtime's fiber scope. Cost: a
+     second fork path, and the pump is orphaned rather than flushed, as in v3.
+
+   **Recommendation: A.** It applies the existing drain-before-close rule to
+   the one path that skips it, and needs no second fork path.
 
 ## Problem / Intent
 
@@ -36,14 +58,20 @@ Matt, RIG-5438 (2026-10-15): **B, migrate now.** `effect` and
 
 ## Global Constraints
 
-- **Versions:** `effect` `^4.0.5` and `@effect/opentelemetry` `4.0.5` (both
-  npm `latest` on 2026-10-15). Both move in the root `package.json` catalog,
-  in one PR.
-- **Scope:** `packages/compass-agent` only, the same 14 Effect-importing
-  files as today. No new Effect adoption beyond the parent's scope.
-- **No behavior change.** Every transport invariant in the parent's Global
-  Constraints holds. The existing `.test.ts` files are its executable form and
-  stay green, edited only where an Effect API name changes.
+- **Versions:** `effect` and `@effect/opentelemetry` at the same 4.0.x
+  patch, in the root `package.json` catalog, in one PR. Use the newest patch
+  that clears `bunfig.toml`'s `minimumReleaseAge` (5 days) when E1 is opened:
+  4.0.5 (published 2026-10-15) clears on 2026-10-20. Do not add a
+  `minimumReleaseAgeExcludes` entry for `effect`.
+- **Scope:** `packages/compass-agent` only. The port touches the 14 files
+  that import Effect today, plus `session-blobs.ts`, which gains an `effect`
+  import (below). `@effect/platform` is removed from the catalog and from
+  `packages/compass-agent/package.json`: no file imports it.
+- **No behavior change, except the two named here:** `dispose` (Open
+  Question 2) and `Queue.offerUnsafe` (G2). Every other transport invariant
+  in the parent's Global Constraints holds. `effect-smoke.test.ts` is the
+  parent's record of Effect semantics, so its cases change where v4 semantics
+  change, and the PR lists each changed assertion.
 - **The public type surface stays free of `effect`, `@effect/opentelemetry`
   and `@opentelemetry/*` types** (parent constraint,
   `src/transport/export-surface.test.ts`).
@@ -59,26 +87,27 @@ renames and moves are below; the four gaps follow.
 
 ### API map
 
-Checked against the installed `effect@4.0.5` declarations.
+Each Effect 4 name below is declared in `effect@4.0.5`'s `dist/<Module>.d.ts`
+(for example `Effect.result` in `dist/Effect.d.ts`, `Queue.sizeUnsafe` in
+`dist/Queue.d.ts`, `TestClock` in `dist/testing/TestClock.d.ts`). The gap
+sections quote the declarations they depend on.
 
 | Effect 3 | Effect 4 | Where |
 | -- | -- | -- |
 | `Effect.either` + `Either.isRight` / `.left` | `Effect.result` + `Result.isSuccess` / `.failure` | `control-source.ts`, `publish-spine.ts` |
 | `Effect.zipRight` | `Effect.andThen` | `frame-sink.ts` |
-| `Effect.fork` | `Effect.forkChild` | `control-source.ts`, smoke test |
+| `Effect.fork` | `Effect.forkChild` | smoke test only; production forks with `runtime.runFork` |
 | `Effect.yieldNow()` | `Effect.yieldNow` (a value, not a call) | `publish-spine.ts` |
-| `Effect.clock` + `clock.unsafeCurrentTimeNanos()` | `Clock` service, `currentTimeNanosUnsafe()` | `control-source.ts` |
+| `Effect.clock` + `clock.unsafeCurrentTimeNanos()` | `yield* Clock.Clock`, then `currentTimeNanosUnsafe()` | `control-source.ts` |
 | `Metric.increment(m)`, `Metric.incrementBy(m, n)`, `Metric.set(g, v)` | `Metric.update(m, 1)`, `Metric.update(m, n)`, `Metric.update(g, v)` | metrics, spine, sink, source |
 | `Metric.tagged(m, k, v)` | `Metric.withAttributes(m, { [k]: v })` | `otel-metrics.ts` |
 | `MetricBoundaries.exponential(...)` | `Metric.exponentialBoundaries(...)`, passed as `{ boundaries }` | `otel-metrics.ts` |
-| `Counter.unsafeUpdate` | `Metric.update` run on the runtime | `session-blobs.ts` |
+| `metric.unsafeUpdate(1, [])` | `metric.updateUnsafe(1, Context.empty())`; it still reaches the shared default registry | `session-blobs.ts` |
 | `Fiber.RuntimeFiber<A>` | `Fiber.Fiber<A>` | `publish-spine.ts`, `control-source.ts` |
 | `Queue.unsafeOffer`, `Queue.unsafeSize()` (an `Option`) | `Queue.offerUnsafe`, `Queue.sizeUnsafe()` (a `number`) | `publish-spine.ts` |
 | `Cause.failureOption` | `Cause.findErrorOption` | `frame-sink.ts` |
 | `Scope.extend(effect, scope)` | `Scope.provide(effect, scope)` | `frame-sink.ts` |
-| `Effect.fork` | `Effect.forkChild` | smoke test only; production forks with `runtime.runFork`, unchanged |
-| `Effect.yieldNow()` | `Effect.yieldNow` (a value, not a call) | `publish-spine.ts` |
-| `Effect.clock` + `clock.unsafeCurrentTimeNanos()` | `yield* Clock.Clock`, then `currentTimeNanosUnsafe()` | `control-source.ts` |
+| `TestClock` from `effect` | `TestClock` from `effect/testing` | smoke test |
 
 `ManagedRuntime`, `Layer.merge`, `Layer.empty`, `FiberSet`, `Ref`,
 `Queue.sliding`/`offer`/`take`, `Schedule.recurs` and `NodeSdk.layer` keep
@@ -86,32 +115,41 @@ their v3 names and shapes.
 
 ### The four gaps
 
-**G1. `Logger.remove(Logger.defaultLogger)` is gone.** v3 removed the console
-logger so that a handled lane failure is not reported twice. v4 replaces the
-logger set with `Logger.layer(loggers)`. Use
-`Logger.layer([Logger.tracerLogger])`: it drops console output and keeps log
-records as span events. The test must prove both: no `console.*` call, and
-the log shows up as an event on the exported span.
+**G1. `Logger.remove(Logger.defaultLogger)` is gone.** Use
+`Logger.layer([Logger.tracerLogger])`. It replaces the logger set, so the
+result equals v3's (the default set in both is the console logger plus the
+tracer logger). v4 no longer logs a fiber that ends with an unhandled error,
+so the parent's reason, not reporting a handled lane failure twice, no longer
+applies. The layer now only keeps explicit `Effect.log*` calls off the
+console. Tests prove no `console.*` call for an `Effect.log*` call and for a
+failing `runtime.runFork`, and that the log is an event on the exported span.
 
 **G2. `Queue.takeUpTo` is gone, and `Queue.takeAll` now blocks while empty.**
-`takeBatch` in `publish-spine.ts` must never block: the pump already waits on
-the wake latch, and a blocking take would hold a priority frame behind an
-empty trace lane. Read `Queue.sizeUnsafe(traceQ)`, then take
-`min(size, room)` frames with `Queue.takeUnsafe`. This is safe for the same
-reason as the parent's drop counter: the producer is synchronous and the pump
-is the only consumer, so no take interleaves between the size read and the
-takes. Tests cover an empty trace lane and a lane holding more than
-`PUBLISH_BATCH_MAX` frames.
+`dist/Queue.d.ts` documents `takeAll` as "Takes all currently available
+messages, waiting until at least one message" and types it
+`Effect<Arr.NonEmptyArray<A>, E>`. `takeBatch` in `publish-spine.ts` must
+never block: the pump already waits on the wake latch. Read
+`Queue.sizeUnsafe(traceQ)`, then take `min(size, room)`
+frames with `Queue.takeUnsafe`. The producer is synchronous and the pump is
+the only consumer, so every take finds a frame; a missing frame is a defect,
+not a skip. Tests enqueue more than `PUBLISH_BATCH_MAX` trace frames with
+`enqueueTrace` and assert batch sizes `[256, n]`, and drain an empty spine.
+
+Separately, v4 `Queue.offerUnsafe` on a full sliding queue now evicts the
+oldest message; v3's rejected the newest. The trace lane already uses the
+effectful `offer`, so production is unchanged. The smoke test's v3 case
+flips to the v4 behavior.
 
 **G3. `Schedule.fromDelays` is gone.** The durable retry ladder
 `[50, 200, 800, 2000]` becomes `Schedule.recurs(4)` with
 `Schedule.modifyDelay` reading the delay by attempt index, exported as
-`DURABLE_RETRY_SCHEDULE` from `frame-sink.ts`. The smoke test drives it with
+`DURABLE_RETRY_SCHEDULE` from `frame-sink.ts`. An index past the array dies
+instead of falling back to a zero delay. The smoke test drives it with
 `TestClock`: each retry fires at its delay, not 1 ms before, and the fifth
 attempt is the last.
 
 **G4. `TestContext.TestContext` is gone.** Tests provide
-`TestClock.layer()` instead.
+`TestClock.layer()` from `effect/testing`.
 
 ### Export-surface test
 
@@ -119,8 +157,10 @@ Effect 4 augments the global `Error` interface from `ErrorReporter.d.ts` and
 `Runtime.d.ts`. The containment walk in `export-surface.test.ts` reaches
 those augmentations through `Error` and reports four effect files, although
 compass-agent exports no effect type. The walk skips declarations inside a
-`declare global` block. The test still fails when a transport export names an
-effect type; the PR shows that by a mutation check.
+`declare global` block only for those two files, and asserts the skipped set
+equals that allowlist, so a new augmentation turns the test red. The test
+still fails when a transport export names an effect type; the PR shows that
+by a mutation check.
 
 ## Alternatives considered
 
@@ -129,17 +169,17 @@ effect type; the PR shows that by a mutation check.
 - **Port module by module behind a compatibility shim.** Rejected: `effect`
   3 and 4 cannot both be installed for one package, and only 14 files are
   involved.
-- **G2 with `Queue.takeBetween(q, 0, max)`.** Not chosen: its v4 declaration
-  documents only `min >= 1` and says an empty queue "will wait or return done".
-  The size-then-take read keeps the non-blocking behavior on a documented API,
-  and the parent already relies on the same single-consumer reasoning.
+- **G2 with `Queue.takeBetween(q, 0, max)`.** Rejected: v4 treats a
+  non-positive bound as 0 and returns `[]` at once, even with a backlog, so
+  the trace lane would never drain.
 
 ## Plan
 
 ### E1: port compass-agent to Effect 4
 
 Files: root `package.json`, `bun.lock`, `packages/compass-agent/package.json`,
-the 14 Effect-importing files under `packages/compass-agent/src`, and
+the 14 Effect-importing files under `packages/compass-agent/src`,
+`session-blobs.ts`, `publish-spine.test.ts`, and
 `packages/compass-agent/scripts/verify-abort-mutants.test.ts` (its region
 anchor reads `result.left`, which becomes `result.failure`).
 
@@ -153,13 +193,18 @@ Red→green:
 
 - `compass-agent:typecheck`: 0 errors (196 on #2163 today).
 - `compass-agent:test`: all pass. A local spike at compass `main` `33db6167`
-  passed 864 of 864 with the map above.
-- G1: `Logger.layer drops console output and retains tracer span events`.
-- G2: new spine tests for an empty drain and for a drain above
-  `PUBLISH_BATCH_MAX`.
+  passed 864 of 864 with the map above, before the G1, G2 and dispose tests
+  named here were added.
+- G1: no `console.*` call for an `Effect.log*` call and for a failing
+  `runtime.runFork`; the log appears as a span event.
+- G2: a trace-lane drain above `PUBLISH_BATCH_MAX` gives `[256, n]`; a mutant
+  that drops the `min` turns it red. An empty spine drains without publishing.
 - G3: the `TestClock` retry test pins delays and the attempt count.
+- Open Question 2 (if A): a resumed session with an interrupted turn and an
+  unresolved pinned model commits the abort frame before `transport.close()`.
 - Export surface: a mutation that re-exports `DURABLE_RETRY_SCHEDULE` from
-  `src/index.ts` turns the test red.
+  `src/index.ts` turns the test red, and so does removing either file from
+  the `declare global` allowlist.
 
 ### E2: close the Renovate PRs
 
