@@ -154,9 +154,27 @@ Recorded as DL-521:
   no bare-letter single chord. Its letter rows are all `Mod+` chords or `G` /
   `W` sequences (`"G B"`, `"G D"`, `"G L"`, `"G S"`, `"W H"` … `"W X"`). None
   ends in `R`.
+- **A1, `Shift+R`.** `apps/ui/src/keyboard/dispatch.ts` `eventToChord`
+  drops Shift only for single non-letter keys:
+  `const shiftEncodedByKey = !hasCommandModifier && key.length === 1 && !/[a-z]/i.test(key);`
+- **A1, text fields.** `dispatch.ts` `installKeymap` runs the editable-target
+  guard before matching:
+  `if (!hasCommandModifier && isEditableTarget(event.target)) return;`
+- **Decision 2, tier-3 Escape.** `dispatch.ts` tier 3 calls
+  `command.run(); event.preventDefault();` for any registered command in its
+  zone. That includes a `run` that declines.
+- **Decision 2, the tour callout.** `@kobalte/core` 2.0.0-alpha.0
+  dismissable layer: `props.onEscapeKeyDown?.(e); if (!e.defaultPrevented &&
+  props.onDismiss) { … props.onDismiss(); }`
 - **A2, the handle shape.** `apps/ui/src/keyboard/roving.ts`:
   `export interface RovingGroupHandle { readonly group: RovingGroup;
   handleCommand(id: CommandId): boolean; isFocused(): boolean; focus(): void;`
+- **A2, no pull-back.** `roving.ts` `createRovingGroup` refocuses only when a
+  stop already holds focus: `const focusInGroup = stops.some((s) => s.el ===
+  document.activeElement); if (focusInGroup && active.id !== lastFocusedId)`.
+  A focused ref is not a stop, so a rebuild leaves it focused. The handle
+  matches stops exactly: `isFocused(): boolean { return opts.stops().some((s)
+  => s.el === document.activeElement); }`.
 - **A3, Enter and Space.** `apps/ui/src/components/RefText.tsx` `RefLink`:
   `if (event.key !== "Enter" && event.key !== " ") return;
   event.preventDefault(); event.stopPropagation(); openExternal(safe());`
