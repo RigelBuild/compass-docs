@@ -148,6 +148,24 @@ Recorded as DL-521:
 > owner and move. These keys reach the board through a `refGroup` spine handle.
 > Chips keep `Space`. `aria-keyshortcuts` names only chords with a target.
 
+## Source evidence (RigelBuild/compass `main` at `33db6167`)
+
+- **A1, no collision.** `apps/ui/src/keyboard/keymap.ts` `DEFAULT_KEYMAP` has
+  no bare-letter single chord. Its letter rows are all `Mod+` chords or `G` /
+  `W` sequences (`"G B"`, `"G D"`, `"G L"`, `"G S"`, `"W H"` … `"W X"`). None
+  ends in `R`.
+- **A2, the handle shape.** `apps/ui/src/keyboard/roving.ts`:
+  `export interface RovingGroupHandle { readonly group: RovingGroup;
+  handleCommand(id: CommandId): boolean; isFocused(): boolean; focus(): void;`
+- **A3, Enter and Space.** `apps/ui/src/components/RefText.tsx` `RefLink`:
+  `if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault(); event.stopPropagation(); openExternal(safe());`
+- **A3, `tabindex`.** `RefLink` renders `role="link"` with
+  `tabindex={props.inRovingGroup ? -1 : 0}`.
+- **T1, the rules seam.** `apps/ui/src/mount.tsx` `mountShell` renders
+  `<RefLinkRulesContext value={store.refLinkRules}>`. `test-router.tsx`
+  `mountApp` does not yet, which is why T1 adds it.
+
 ## Alternatives considered
 
 1. **Widen `isFocused` to containment** (rejected). A ref would count as the
