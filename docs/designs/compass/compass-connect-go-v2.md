@@ -35,10 +35,9 @@ to the agent unchanged: `Board`, `Forge`, `Comms`, `Lifecycle`,
 The publisher's upstream `Send` is a seventh path. Their doc comments promise
 "every status unchanged".
 
-In v2, a client marks every error it decodes as remote. connecthttp's
-`scrubHandlerError` turns a remote error that a handler returns into
-`CodeInternal` with no message. The agent branches on codes that would
-collapse to `Internal`:
+v2 clients mark decoded errors remote, and connecthttp's `scrubHandlerError`
+turns a returned remote error into `CodeInternal` with no message. The agent
+branches on codes that would collapse:
 
 - `relayCall` in
   [`relay-error.ts`](https://github.com/RigelBuild/compass/blob/main/packages/compass-agent/src/relay-error.ts)
@@ -61,13 +60,11 @@ Options:
 **Recommendation:** (a). Decision needed: may the gateway keep passing
 Server-authored error text to the agent?
 
-**Q3. Client read limits.** v1 has no per-message read limit. v2 defaults to
-4 MiB on clients and on handlers. The server side is settled under Read
-limits. On the client side, one read has no bound today: the Runner's
-`Sessions` stream, which carries `ResumeBody.session_body`.
-`ReconstructSessionBody` puts no limit on that body. Session-blob frames are
-not at risk, because the hub sends them in `configChunkBytes` (512 KiB)
-chunks.
+**Q3. Client read limits.** v1 has no read limit; v2 defaults to 4 MiB on
+both sides. Server limits are settled under Read limits. One client read is
+unbounded today: the Runner's `Sessions` stream carries
+`ResumeBody.session_body`, which `ReconstructSessionBody` does not bound.
+Session-blob frames come in 512 KiB `configChunkBytes` chunks.
 
 Options:
 
@@ -130,9 +127,8 @@ together (Q1):
   with 6 services: AgentGateway, GatewayAuth, GatewayCredentials,
   GatewayRegistry, GuestControl and RunnerService.
 
-Package `server` imports both stub packages, and `network_door.go` imports
-both. The preparatory PRs move what the tool handles badly onto v1, so the
-flip's hand-edit commit stays small.
+Package `server` and its `network_door.go` import both. The preparatory PRs
+move what the tool handles badly onto v1, keeping the flip's hand edits small.
 
 **Flip mechanics.** The flip PR has three commits:
 
@@ -148,10 +144,10 @@ failures were in planned hand work: typed streams in `guestd`, `microvm` and
 
 **Ecosystem modules.**
 
-- `otelconnect` v0.12.0 is the only release that supports both majors. It
-  keeps v1's `NewInterceptor` and adds `NewServerInterceptor` and
-  `NewClientInterceptor`. After the flip, v1 stays in `go.mod` only as
-  `// indirect`, through otelconnect.
+- `otelconnect` v0.12.0, the only release supporting both majors, adds
+  `NewServerInterceptor` and `NewClientInterceptor` beside v1's
+  `NewInterceptor`. After the flip, v1 stays only as an `// indirect`
+  otelconnect dependency.
 - `grpchealth` moves to `connectrpc.com/grpchealth/v2` v2.0.0, which provides
   `Register(*connect.Server, Checker)`.
 - `connectrpc.com/cors` v0.1.0 has no connect dependency and stays.
@@ -261,7 +257,7 @@ were created:
 |---|---|---|---|
 | 6 relay forwards + publisher upstream `Send` | upstream code and message | `Internal`, no message | Q2 (a) `relayedError` |
 | `(*Hub).Start` mint branch, `fmt.Errorf("minting fresh session id: %w")` | `Unknown` with text | `Unknown`, no message | Unreachable: since Go 1.24, `crypto/rand.Read` "never returns an error" and crashes instead. PR 1 makes the mint infallible, as `store/ids.go` does, so no error path is left to port. |
-| `Send` / `Receive` / `Err` in the 8 streaming handlers: `SubscribeEvents`, `SubscribeComms`, `Publish`, `Control`, `Sessions`, `PublishEvents`, `FetchAgentConfig`, `FetchSessionBlobs` | see the next table | see the next table | PR 1 pins the over-limit cases |
+| `Send` / `Receive` / `Err` in the 8 streaming handlers: `SubscribeEvents`, `SubscribeComms`, `Publish`, `Control`, `Sessions`, `PublishEvents`, `FetchAgentConfig`, `FetchSessionBlobs` | see the next table | see the next table | PR 1 pins the over-limit and malformed-frame cases |
 
 These handlers only touch their own server-side stream, which never decodes a
 peer's error. Their errors come from `envelope.go` (v1) and
@@ -276,8 +272,10 @@ peer's error. Their errors come from `envelope.go` (v1) and
 | over read limit | `ResourceExhausted` | `message size N is larger than configured max M` |
 | over send limit | `ResourceExhausted` | `message size N exceeds sendMaxBytes M` |
 | context done | `Canceled` / `DeadlineExceeded` | from `wrapIfContextDone` |
+| malformed frame: incomplete prefix / short payload | v1 `InvalidArgument`, v2 `Internal` | `protocol error: incomplete envelope: …` / `protocol error: promised N bytes in enveloped message, got M bytes` |
 
 Both majors create these locally, so the scrub keeps them, with the same text.
+Only the malformed-frame code changes.
 
 Every other origin is already a `*connect.Error`, and the tool keeps its text.
 These message contracts survive:
@@ -366,12 +364,12 @@ unchanged after the flip.
   - Forge #2313–#2316, #2243, #2233 and #2312 do not overlap.
   - At port start, re-count importers and procedures, re-run the scratch
     migration, and update this record.
-- **No repo-wide freeze, and its costs.** Other go/ PRs keep landing. The flip
-  PR absorbs them by repeating commits 1–3 at each rebase.
-  - Each `go.sum` move on `main`, including Renovate gomod bumps, conflicts
-    with the shared `vendorHash` line in PRs 3–4. Re-run the refresh script.
-  - Every push resets Matt's approval, and `reviewDecision: APPROVED` can
-    survive a push, so re-request review on each new head.
+- **No repo-wide freeze, and its costs.** Other go/ PRs keep landing; the
+  flip absorbs them by repeating commits 1–3 per rebase.
+  - A `go.sum` move on `main` (Renovate included) conflicts on `vendorHash` in
+    PRs 3–4. Re-run the refresh script.
+  - Each push resets Matt's approval, though `reviewDecision: APPROVED` can
+    survive it. Re-request review.
   - Open the flip for review only after PRs 1–3 merge.
 - **Per-PR gate.** Every PR passes
   `moon run compass-go:tidy compass-go:vet compass-go:test compass-go:lint compass-proto:drift compass-proto:gen-fence`
@@ -379,15 +377,19 @@ unchanged after the flip.
 - **Pins.** `connectrpc.com/connect/v2` v2.0.1, `grpchealth/v2` v2.0.0,
   `otelconnect` v0.12.0, migrate tool v1.0.0, go 1.26.0.
 - **Contracts.** The wire protocol, procedure names, and every code and
-  message in the audit tables stay byte-identical. No proto edits. One
-  exception: a Runner stream whose token source fails now fails before it
-  opens, instead of reaching the Server and drawing `Unauthenticated`.
+  message in the audit tables stay byte-identical. No proto edits. Two
+  accepted exceptions:
+  - A Runner stream whose token source fails now fails before it opens,
+    instead of drawing `Unauthenticated` from the Server.
+  - Malformed frames go from `InvalidArgument` to `Internal` upstream. No
+    normalization: only a broken peer sends them, and no client branches on
+    that code for framing. The one Go classifier on `InvalidArgument`,
+    `retryableDialError`, sees only unary `Enroll` errors, which carry no
+    envelope.
 - **Errors.** A `NewError` argument is an identifier, a string, `errors.New`,
-  or a `%w`-free `fmt.Errorf`. It is never a `%w` call. For an identifier
-  `err`, the tool emits `NewError(code, err.Error()).WithCause(err)`. The code
-  is kept, and the message is the same bytes v1 sent, which for a wrapped
-  error includes the inner text. `WithCause` keeps `errors.Is` working on the
-  Server and is never sent to clients.
+  or a `%w`-free `fmt.Errorf`, never a `%w` call. The tool turns identifier
+  `err` into `NewError(code, err.Error()).WithCause(err)`: same code, and the
+  same message bytes as v1, inner text included. The cause stays server-side.
 - **Public repo boundary.** PR text cites compass paths only.
 
 ## Plan
@@ -409,12 +411,15 @@ Stays on v1. Every test crosses a real boundary.
   exact code token and message for a not-found case and an invalid-argument
   case. These tests pin `commsCallError`, `boardCallError`, `forgeCallError`
   and `lifecycleCallError`.
-- **Read limits.**
+- **Wire errors.**
   - A socket-door `PutAgentConfigRequest` with `proto.Size` equal to
     `compassServiceMaxReadBytes` is not `ResourceExhausted`. One byte more
     is.
   - The Runner receives a `Sessions` resume body above 4 MiB.
   - An over-limit AgentGateway `Publish` frame returns `ResourceExhausted`.
+  - Raw `Publish` bodies with a 3-byte prefix, and with a prefix promising
+    more bytes than follow, return `InvalidArgument` with the upstream text.
+    The flip changes only that expected code, to `Internal`.
 - **Code.**
   - Make the session-id mint infallible: `mintFreshSessionID() string`, and
     the `Hub.freshSessionID` field becomes `func() string`. `Start`'s mint
@@ -428,7 +433,7 @@ Files:
 - `go/server/relay_envelope_pgtest_test.go`
 - `go/server/socket_door_read_limit_test.go`
 - `go/internal/runner/sessions_read_limit_test.go`
-- `go/internal/runner/gateway/publish_read_limit_test.go`
+- `go/internal/runner/gateway/publish_wire_errors_test.go`
 - `go/internal/runnerhub/{commands,hub}.go`
 - `go/server/serve.go`
 
@@ -486,7 +491,9 @@ This is the three-commit flip. Commit 3 holds:
 - the client limits from Q3;
 - a depguard deny on `connectrpc.com/connect$` and `connectrpc.com/grpchealth$`;
 - README and `proto/moon.yml` plugin notes;
-- the `vendorHash` refresh.
+- the `vendorHash` refresh;
+- the malformed-frame test's expected code, from `InvalidArgument` to
+  `Internal`.
 
 Interfaces:
 
