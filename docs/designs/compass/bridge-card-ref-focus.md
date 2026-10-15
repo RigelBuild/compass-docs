@@ -90,9 +90,10 @@ the card.
 ### A3 — Keys while a ref has focus
 
 Keys are normalized with `eventToChord` and matched against resolved
-`DEFAULT_KEYMAP` rows. A chord with no row (`Shift+ArrowLeft`) matches nothing.
-A chord bound elsewhere (`Mod+Alt+ArrowLeft`, `workspace.focusPaneLeft`) keeps
-its own command, and `refGroup` does not handle it.
+`DEFAULT_KEYMAP` rows. `refGroup` handles only the rows in the table below.
+Any other chord behaves as it does on a focused card: `Shift+ArrowLeft` has no
+row, and `Mod+Alt+ArrowLeft` has a row (`workspace.focusPaneLeft`) with no
+registered command, so the dispatcher skips it.
 
 | Key | Effect |
 | --- | --- |
