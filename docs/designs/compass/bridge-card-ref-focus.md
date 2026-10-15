@@ -32,7 +32,8 @@ Ledger: DL-521 (§A5). It refines DL-221.
    ```
 
    - There is one keydown path, with the same leader and editable-guard order
-     as every other key. Escape is listed in the overlay and can be remapped.
+     as every other key. Escape gets a keymap row, so the overlay lists it.
+     User remapping stays deferred, as `keymap.ts` notes.
    - This is the first Escape row. On a focused card, Escape reaches tier 3,
      and its `run` declines, but the dispatcher still calls
      `preventDefault()`.
@@ -89,8 +90,9 @@ the card.
 ### A3 — Keys while a ref has focus
 
 Keys are normalized with `eventToChord` and matched against resolved
-`DEFAULT_KEYMAP` rows, so `Shift+ArrowLeft` or `Mod+Alt+ArrowLeft` match
-nothing here.
+`DEFAULT_KEYMAP` rows. A chord with no row (`Shift+ArrowLeft`) matches nothing.
+A chord bound elsewhere (`Mod+Alt+ArrowLeft`, `workspace.focusPaneLeft`) keeps
+its own command, and `refGroup` does not handle it.
 
 | Key | Effect |
 | --- | --- |
@@ -112,9 +114,11 @@ nothing here.
 - **Re-render.** If a store push rebuilds the title, focus drops to `<body>`.
   The roving effect does not pull it back.
 
-The identity gate cannot see a ref. `isFocused()` is `stops().some((s) =>
-s.el === document.activeElement)`, so `activeGroup()` is null on a ref. The
-keys above reach a handler through `refGroup` (Decision 2).
+The board group's identity gate cannot see a ref. Its `isFocused()` is
+`stops().some((s) => s.el === document.activeElement)`. On a ref,
+`activeGroup()` returns `refGroup` instead (`spine.ts`:
+`for (const g of groups) if (g.isFocused()) return g;`), so `activeZone()` is
+still `main`. The keys above reach a handler through `refGroup` (Decision 2).
 
 ### A4 — Announcement
 
@@ -155,7 +159,8 @@ Recorded as DL-521:
   `W` sequences (`"G B"`, `"G D"`, `"G L"`, `"G S"`, `"W H"` … `"W X"`). None
   ends in `R`.
 - **A1, `Shift+R`.** `apps/ui/src/keyboard/dispatch.ts` `eventToChord`
-  drops Shift only for single non-letter keys:
+  drops Shift only for a single character outside ASCII `a-z` with no command
+  modifier, so `Shift+R` keeps it:
   `const shiftEncodedByKey = !hasCommandModifier && key.length === 1 && !/[a-z]/i.test(key);`
 - **A1, text fields.** `dispatch.ts` `installKeymap` runs the editable-target
   guard before matching:
@@ -209,10 +214,10 @@ Recorded as DL-521:
 
 ## Global Constraints
 
-- **Dependency.** Implementation starts after compass PR #2192 merges.
+- **Dependency.** Compass PR #2192 (merged) supplies the `RefLink` spans.
 - **DL-220.** Nothing writes tabindex on a ref.
-- **DL-224.** The board's `isFocused`, `activeGroup` and `activeZone` stay
-  unchanged.
+- **DL-224.** The board group's `isFocused()` stays identity-based. On a ref,
+  `refGroup` is the active group, in zone `main`.
 - **One chord source.** No letter or arrow literals outside `keymap.ts` and
   tests.
 - **One "linked" rule.** `RefLink` and `hasLinkedRef` both call `refHref`.
