@@ -90,15 +90,17 @@ the card.
 ### A3 — Keys while a ref has focus
 
 Keys are normalized with `eventToChord` and matched against resolved
-`DEFAULT_KEYMAP` rows. `refGroup` handles only the rows in the table below.
-Any other chord behaves as it does on a focused card: `Shift+ArrowLeft` has no
-row, and `Mod+Alt+ArrowLeft` has a row (`workspace.focusPaneLeft`) with no
-registered command, so the dispatcher skips it.
+`DEFAULT_KEYMAP` rows. `RefLink` takes every `Enter` and `Space`, modifiers
+included, before the dispatcher. `refGroup` handles the other rows in the
+table below. Any other chord behaves as it does on a focused card:
+`Shift+ArrowLeft` has no row, and `Mod+Alt+ArrowLeft` has a row
+(`workspace.focusPaneLeft`) with no registered command, so the dispatcher
+skips it.
 
 | Key | Effect |
 | --- | --- |
 | `R` / `Shift+R` rows | Next / previous ref, with wrap. |
-| `Enter`, `Space` | Open the ref (`RefLink`'s own `onKeyDown`). |
+| `Enter`, `Space`, with any modifier | Open the ref (`RefLink`'s own `onKeyDown`). `Shift+Enter` does not reach `board.openAssignedAgent`. |
 | `Escape` | Make the owner the cursor and focus it. |
 | The six `list.move*` rows | Exit to the owner, then move the cursor from it. |
 | Anything else | Not handled. |
