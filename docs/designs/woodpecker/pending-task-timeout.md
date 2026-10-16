@@ -2,7 +2,7 @@
 
 ## Decisions
 
-Matt ruled on RIG-5485 (2026-10-16): Q1 is C; the other recommendations stand.
+Matt ruled on RIG-5485 (2026-10-16). D1–D5 record the ruling.
 
 - **D1** (DL-530) — A queued workflow times out when its task has been
   runnable in `Info.Pending` longer than `pending-timeout` and no live agent
