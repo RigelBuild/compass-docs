@@ -1,8 +1,8 @@
 # Compass connect-go v2 migration
 
-## Open Questions
+## Resolved decisions
 
-The questions are independent.
+Ruled (Matt, 2026-10-16): Q1 (a), Q2 (a), Q3 (a). Options stay as rationale.
 
 **Q1. Stack shape.** Compass generates two stub lanes, public and internal.
 Two facts break a stack that flips one lane at a time:
@@ -27,7 +27,7 @@ Options:
   bridge between the error types covers both boundaries until the second lane
   lands.
 
-**Recommendation:** (a). See Alternatives considered.
+**Ruled:** (a). See Alternatives considered.
 
 **Q2. Relayed errors.** Six runner-gateway handlers return the Server's error
 to the agent unchanged: `Board`, `Forge`, `Comms`, `Lifecycle`,
@@ -57,8 +57,8 @@ Options:
 - (c) Report relay failures in the response body. This changes the proto of
   both lanes.
 
-**Recommendation:** (a). Decision needed: may the gateway keep passing
-Server-authored error text to the agent?
+**Ruled:** (a). The gateway keeps passing Server-authored error text to the
+agent.
 
 **Q3. Client read limits.** v1 has no read limit; v2 defaults to 4 MiB on
 both sides. Server limits are settled under Read limits. One client read is
@@ -93,9 +93,8 @@ connecthttp.NewTransport(httpClient, cfg.ServerAddr,
 )
 ```
 
-**Recommendation:** (a). The port should not add a new failure mode, and the
-Runner already authenticates its Server. Decision needed: is an unlimited
-`Sessions` read acceptable?
+**Ruled:** (a). The port adds no new failure mode, and the Runner already
+authenticates its Server. An unlimited `Sessions` read is accepted.
 
 ## Problem / Intent
 
@@ -546,7 +545,7 @@ Files:
 
 ## Tasks
 
-- [ ] Matt answers Q1–Q3.
+- [x] Matt answers Q1–Q3 (all (a), 2026-10-16).
 - [ ] Gate: both lines merged; importers and procedures re-counted.
 - [ ] PR 1: real-boundary contract tests, mint branch deleted, socket-door
   limits.
