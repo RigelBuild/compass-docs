@@ -1,5 +1,7 @@
 # Compass connect-go v2 migration
 
+Errata: E1
+
 ## Resolved decisions
 
 Ruled (Matt, 2026-10-16): Q1 (a), Q2 (a), Q3 (a). Options stay as rationale.
@@ -552,3 +554,11 @@ Files:
 - [ ] PR 2: 63 cause-dropping `NewError` sites reshaped.
 - [ ] PR 3: otelconnect v0.12.0, `WithoutTraceEvents` dropped, #2310 closed.
 - [ ] PR 4: both lanes on v2.
+
+## Errata
+
+### E1 — 2026-10-16 (dependencies)
+
+> The 62 `NewError(code, fmt.Errorf("…%w"))` sites
+
+The count is 65. Three sites in `go/internal/guestd/supervisor.go` split `fmt.Errorf` onto a second line, so the single-line search missed them: the nft egress arm, the gateway proxy start, and exec program resolution. PR 2 reshapes all 65 plus `spawn.go`, 66 in total. The API mapping row and the Tasks line carry the same undercount.
