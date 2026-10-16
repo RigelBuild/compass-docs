@@ -1,67 +1,27 @@
 # Time out pending workflows no agent takes (RIG-5475)
 
-## Open Questions
+## Decisions
 
-Round 1 asks Q1, Q3 and Q4. Q2 depends on Q1. Q5 applies only if Q1 is C.
+Matt ruled on RIG-5485 (2026-10-16): Q1 is C; the other recommendations stand.
 
-### Q1. What makes a queued workflow time out?
-
-Both options share everything else in this record.
-
-- **A. Age only, default `72h`.** Clears the 7 to 33 day incident. One plan
-  task, no agent matching, no `hostname` gap, no stale agent rows. Cost: a
-  task that can never run holds its check pending for 3 days.
-- **C. Age and no live matching agent, default `6h`.** A backlog on a pool with
-  live agents never trips it. But a pool at zero has no agent rows, so the
-  check cannot tell "never" from "not yet", and for scale-from-zero pools C is
-  age-only at `6h`. A pool outage over 6 hours (spot shortage, broken image,
-  stalled autoscaler) then errors real work. Adds T2, Q5, and a `hostname` gap:
-  pinned tasks never time out.
-
-**Recommendation:** A at `72h`. It meets the ruling with less code, and no
-outage shorter than 3 days errors real work. If 3 days proves too slow, T2 can
-be added later behind the same flag.
-
-### Q2. Default for `pending-timeout` (depends on Q1)
-
-- **`0`, opt-in.** Upstream-compatible, but our deploy must set it.
-- **`72h`.** For A. About 24 times the worst observed backlog wait.
-- **`6h`.** For C only. With A it errors backlog tasks.
-
-**Recommendation:** `72h` if Q1 is A, `6h` if Q1 is C. On by default: the fork
-exists to run our server. The plan assumes `72h`.
-
-### Q3. Where does the reason show?
-
-- **Workflow and step `Error`, state `error`.** Existing fields: the Errors
-  tab lists `workflow.error` (`workflowsWithErrors`), and the step log bar
-  shows `step.error` once `finished` is set (`PipelineLog.vue`). No web change.
-- **A new `CancelInfo` field.** Model, API, web and i18n changes.
-- **An entry in `pipeline.Errors`.** That list holds config errors.
-
-**Recommendation:** workflow and step `Error`, state `error`.
-
-### Q4. What does the sweep finalize?
-
-- **The timed-out workflow and the dependents that can never run.** Running
-  siblings and `runs_on: failure` dependents continue.
-- **The whole pipeline through `Cancel`.** Also kills running siblings and
-  `runs_on: failure` workflows, and a never-started pipeline ends `canceled`,
-  which posts success.
-
-**Recommendation:** the timed-out workflow and its dead dependents.
-
-### Q5. Which agents count as able to take a task? (C only)
-
-- **Agents seen within `pending-timeout`.** `ReportHealth` stores
-  `LastContact` every 10 s, and it survives a server restart. The autoscaler's
-  `nonPoolFreeSlots` also skips "an agent whose last contact is stale".
-- **Every agent that has ever reported.** An agent with a persisted config or
-  an individual token never removes its row (`UnregisterAgent` in
-  server/rpc/rpc.go). A dead matching row stops the timeout, and nothing shows
-  why.
-
-**Recommendation:** agents seen within `pending-timeout`.
+- **D1** (DL-530) — A queued workflow times out when its task has been
+  runnable in `Info.Pending` longer than `pending-timeout` and no live agent
+  matches its labels. A pool at zero has no agent rows, so for scale-from-zero
+  pools this is age-only: a pool outage longer than the timeout errors real
+  work. A `hostname`-pinned task never times out.
+- **D2** (DL-531) — `pending-timeout` defaults to `6h`, on by default; `0`
+  disables. That is about twice the worst observed backlog wait, and a backlog
+  on a pool with live agents never trips it.
+- **D3** (DL-532) — A timed-out workflow and its pending steps end `error`,
+  with the reason in their `Error` fields. Never `canceled`: it posts success.
+- **D4** (DL-533) — The sweep finalizes only the timed-out workflow and the
+  dependents that can never run. Running siblings and `runs_on: failure`
+  dependents continue.
+- **D5** (DL-534) — An agent counts as live when `NoSchedule` is false and its
+  `LastContact` is within `pending-timeout`. `ReportHealth` stores
+  `LastContact` every 10 s, and it survives a restart. Agents that ever
+  reported do not count: a persisted-config or individual-token agent never
+  removes its row (`UnregisterAgent` in server/rpc/rpc.go).
 
 ## Problem / Intent
 
@@ -107,7 +67,7 @@ All must hold:
    is not used: older rows hold `0`. A clock of `0` never times out.
 4. Every dependency is terminal and lets it run (*Dependents that can never
    run*).
-5. Option C only: no live agent matches the task labels (T2).
+5. No live agent matches the task labels (*Matching against live agents*).
 
 A blocked pipeline has no task: `Create` returns before `start` while it is
 `StatusBlocked`. Backlog and scale-from-zero tasks wait up to the timeout.
@@ -118,7 +78,7 @@ A blocked pipeline has no task: `Create` returns before `start` while it is
    `error`, with the reason in `Error` and `Finished` set, so the step log bar
    shows it. A started step (a resubmitted lease) ends `killed`, as today.
    Example reason:
-   `no agent took this workflow within 72h0m0s (pending-timeout); labels: [type=linux]`.
+   `no agent took this workflow within 6h0m0s (pending-timeout); labels: [type=linux]`.
    Labels are sorted `key=value` pairs, without `woodpecker-ci.org/` labels,
    empty values, `repo` and `org-id`.
 2. Then `Scheduler.CancelWorkflows(ctx, []string{id})`, one ID per call:
@@ -169,7 +129,7 @@ row whose workflow is terminal or missing goes. If its task is in
 `storage.TaskDelete`. `Info.Running` rows are left to their lease. `Done`
 passes the real state, so dependents of a stale `success` row are not killed.
 
-### Matching against live agents (option C only)
+### Matching against live agents
 
 The server stores every label an agent polls with except `hostname`. The agent
 builds its poll labels in `run` (cmd/agent/core/agent.go):
@@ -189,7 +149,7 @@ maps.Copy(labels, customLabels)
 sets it, so a hostname-pinned task never times out. `scheduler.NewLabelFilter`
 wraps `createFilterFunc`, so the rules exist once. An agent counts when
 `NoSchedule` is false, because `RPC.Next` returns before `Poll` for it, and its
-`LastContact` is within `pending-timeout` (Q5). The autoscaler deletes a
+`LastContact` is within `pending-timeout` (D5). The autoscaler deletes a
 drained agent (`removeDrainedAgents`) or clears the flag (`createAgents`).
 
 ## Alternatives considered
@@ -210,6 +170,8 @@ drained agent (`removeDrainedAgents`) or clears the flag (`createAgents`).
   never retried.
 - **Drop stale queued tasks with `CancelWorkflows`.** Kills dependents of a
   stale `success` workflow.
+- **Age only, `72h` (option A).** Less code, but a task that can never run
+  holds its check pending for 3 days.
 - **Agent match with a short grace (option B).** Every scale-from-zero task
   looks unschedulable until its agent boots.
 
@@ -222,7 +184,7 @@ drained agent (`removeDrainedAgents`) or clears the flag (`createAgents`).
 - No database migration, no API or web change, no new Go module.
 - `CHANGELOG.md` is not edited. Upstream generates it.
 - Flag `pending-timeout`, env `WOODPECKER_PENDING_TIMEOUT`, a
-  `cli.DurationFlag`, default `72h` (Q2), `0` disables. It goes after
+  `cli.DurationFlag`, default `6h` (D2), `0` disables. It goes after
   `orphan-reap-grace` in cmd/server/flags.go.
 - The sweep runs only where the orphan reaper runs: one replica.
 - A new file starts with the Apache header and `Copyright 2026 Woodpecker
@@ -233,7 +195,8 @@ drained agent (`removeDrainedAgents`) or clears the flag (`createAgents`).
 
 ## Plan
 
-T1 is the whole plan if Q1 is A. T2 is added only if Q1 is C, after T1.
+T1 adds the age sweep. T2 adds the live agent match, after T1. One PR holds
+both.
 
 ### T1. Time out pending workflows in the reaper
 
@@ -308,10 +271,10 @@ The docs get `### PENDING_TIMEOUT` after `### ORPHAN_REAP_GRACE`: the default,
 ### T1 tests
 
 Written first, as `TestReapOrphanedWorkflows` rows (strict
-`store_mocks.MockStore`, `now` as clock, `72h` timeout, counter read by
+`store_mocks.MockStore`, `now` as clock, `6h` timeout, counter read by
 `testutil.ToFloat64`). Rows that time out or finalize:
 
-1. A pending `type=linux` task, pipeline 73 hours old. Workflow and step end
+1. A pending `type=linux` task, pipeline 7 hours old. Workflow and step end
    `error` with the reason in `Error` and `Finished` set. `CancelWorkflows`
    gets `["41"]` once. The pipeline ends `error`. The counter rises by 1.
 2. Row 1 on a push event with `StatusAggregate` on and the
@@ -326,7 +289,7 @@ Written first, as `TestReapOrphanedWorkflows` rows (strict
 5. Row 1 plus a `runs_on: failure` dependent of row 1's workflow and of a
    workflow that ended `success`. It ends `skipped`. While that second
    workflow is `running`, it stays queued.
-6. A dead dependent in `Info.Pending` whose dependency failed 80 hours ago
+6. A dead dependent in `Info.Pending` whose dependency failed 8 hours ago
    ends `skipped`, not `error`.
 7. `WorkflowUpdate` fails. No `CancelWorkflows`, no counter change.
 8. `CancelWorkflows` fails. The workflow still ends `error`.
@@ -339,7 +302,7 @@ Written first, as `TestReapOrphanedWorkflows` rows (strict
 
 Rows that stay queued, each one change from row 1: the task is in
 `WaitingOnDeps`; the task is in `Running`; a dependency finished 1 hour ago;
-the pipeline was reviewed 1 hour ago; the pipeline is 71 hours old;
+the pipeline was reviewed 1 hour ago; the pipeline is 5 hours old;
 `pendingTimeout` is `0`; the queue is paused.
 
 `TestReapPendingTimeoutNextPass` calls `ReapOrphanedWorkflows` twice on one
@@ -351,7 +314,7 @@ set of mocks:
   `TaskList` still has row `41`, `Info` does not, and `WorkflowLoad(41)`
   returns it `error`. `TaskDelete("41")` is called once.
 
-### T2. Live agent match (only if Q1 is C)
+### T2. Live agent match
 
 Files: server/model/agent.go, server/scheduler/filter.go,
 server/pipeline/pending_timeout.go, their tests, and server/rpc/rpc_test.go.
@@ -369,8 +332,9 @@ func anyAgentTakes(filters []scheduler.FilterFn, task *model.Task) bool
   new map.
 - `loadLiveAgentFilters` calls `AgentList(&model.ListOptionsWithAll{All:
   true})` once per pass and keeps agents with `NoSchedule` false and
-  `LastContact` within `window` (Q5). On an error, no task times out.
-- Tests: `TestAgentPollLabels`; `TestNewLabelFilter`; reap rows where a busy
+  `LastContact` within `window` (D5). On an error, no task times out.
+- Tests: T1 rows gain an `AgentList` mock with no live match;
+  `TestAgentPollLabels`; `TestNewLabelFilter`; reap rows where a busy
   live match stays, a `NoSchedule` match and a match last seen beyond the
   window time out, and a `hostname` task and an `AgentList` error stay.
 - Parity test: drive `RPC.Next` with the labels the agent sends, as
@@ -386,7 +350,7 @@ func anyAgentTakes(filters []scheduler.FilterFn, task *model.Task) bool
       fail.
 - [ ] T1: add pending_timeout.go, change reap.go, add the flag, the wiring
       and `PENDING_TIMEOUT` in the server configuration docs.
-- [ ] T2, only if Q1 is C: tests first, then the four functions.
+- [ ] T2: tests first, then the four functions.
 - [ ] `make lint` and `make test-server` pass.
 - [ ] After deploy, within one reaper interval: the `type=linux` pipelines end
       `error`, their required check posts failure, and the counter rises.
