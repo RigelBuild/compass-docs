@@ -18,7 +18,7 @@
 		},
 		{ "source": "\\bSEA-\\d+\\b", "flags": "" }
 	],
-	"ignore": [],
+	"ignore": ["orion-ref-gate"],
 	"carveOutPaths": ["ref-gate.config.json", "bun.lock"],
 	"carveOutPrefixes": [],
 	"allowlist": {},
