@@ -132,11 +132,11 @@ flips to the v4 behavior.
 
 **G3. `Schedule.fromDelays` is gone.** The durable retry ladder
 `[50, 200, 800, 2000]` becomes `Schedule.recurs(4)` with
-`Schedule.modifyDelay` reading the delay by attempt index, exported as
-`DURABLE_RETRY_SCHEDULE` from `frame-sink.ts`. An index past the array dies
-instead of falling back to a zero delay. The smoke test drives it with
-`TestClock`: each retry fires at its delay, not 1 ms before, and the fifth
-attempt is the last.
+`Schedule.modifyDelay` reading the delay by attempt index through
+`durableRetryDelay(attempt)`, exported with `DURABLE_RETRY_SCHEDULE` from
+`frame-sink.ts`. An index past the array is `Effect.die`, not a zero delay.
+The smoke test drives the schedule with `TestClock`: each retry fires at its
+delay, not 1 ms before, and the fifth attempt is the last.
 
 **G4. `TestContext.TestContext` is gone.** Tests provide
 `TestClock.layer()` from `effect/testing`.
@@ -146,12 +146,14 @@ attempt is the last.
 Effect 4 augments the global `Error` interface from `ErrorReporter.d.ts` and
 `Runtime.d.ts`. The containment walk in `export-surface.test.ts` reaches
 those augmentations through `Error` and reports four effect files, although
-compass-agent exports no effect type. The walk skips declarations inside a
-`declare global` block only for those two files, and asserts the skipped set
-equals that allowlist. Any other global augmentation is walked like any other
-declaration, so one that names an effect type fails the leak check. The test
-still fails when a transport export names an effect type; the PR shows both
-by mutation checks.
+compass-agent exports no effect type. The walk skips only the global `Error`
+interface declarations in those two files, and asserts each skipped
+declaration's exact shape: `ErrorReporter.d.ts` extends `Reportable` with no
+members, and `Runtime.d.ts` declares only `[errorExitCode]` and
+`[errorReported]`. A new member or base on either one changes the shape and
+fails the test. Any other global augmentation is walked like any other
+declaration. The test still fails when a transport export names an effect
+type; the PR shows each case by mutation checks.
 
 ## Alternatives considered
 
@@ -180,7 +182,8 @@ anchor reads `result.left`, which becomes `result.failure`).
 Interfaces:
 
 - `export const DURABLE_RETRY_SCHEDULE: Schedule.Schedule<number, unknown, never, never>`
-  in `frame-sink.ts`. The package entry does not re-export it.
+  and `export function durableRetryDelay(attempt: number): Effect.Effect<Duration.Duration>`
+  in `frame-sink.ts`. The package entry re-exports neither.
 - No change to any exported signature in `src/index.ts`.
 
 Red→green:
@@ -193,13 +196,14 @@ Red→green:
   `runtime.runFork`; the log appears as a span event.
 - G2: a trace-lane drain above `PUBLISH_BATCH_MAX` gives `[256, n]`; a mutant
   that drops the `min` turns it red. An empty spine drains without publishing.
-- G3: the `TestClock` retry test pins delays and the attempt count.
+- G3: the `TestClock` retry test pins delays and the attempt count, and
+  `durableRetryDelay(5)` dies; a mutant that returns a zero delay turns it red.
 - Refusal drain: a resumed session with an interrupted turn and an
   unresolved pinned model commits the abort frame before `transport.close()`;
   a mutant that removes the drain turns it red.
 - Export surface: a mutation that re-exports `DURABLE_RETRY_SCHEDULE` from
-  `src/index.ts` turns the test red, and so does removing either file from
-  the `declare global` allowlist.
+  `src/index.ts` turns the test red, and so does adding an effect-typed
+  member to either skipped `Error` declaration.
 
 ### E2: close the Renovate PRs
 
