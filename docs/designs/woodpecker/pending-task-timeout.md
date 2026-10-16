@@ -242,6 +242,8 @@ server/pipeline/reap_test.go, server/pipeline/helper_test.go,
 server/config.go, cmd/server/flags.go, cmd/server/setup.go,
 cmd/server/server.go, docs/docs/30-administration/10-configuration/10-server.md.
 
+Interfaces:
+
 ```go
 // server/pipeline/reap.go
 func ReapOrphanedWorkflows(ctx context.Context, storage store.Store, now time.Time, grace, pendingTimeout time.Duration) error
@@ -330,6 +332,10 @@ Written first, as `TestReapOrphanedWorkflows` rows (strict
 8. `CancelWorkflows` fails. The workflow still ends `error`.
 9. A row in `Info.Pending` whose workflow is `success` gets
    `Done(ctx, "41", model.StatusSuccess)` and no cancel.
+10. A queued row whose `WorkflowLoad` returns `ErrRecordNotExist` gets
+    `Error`; its default dependent ends `skipped`, not run.
+11. Row 1 plus dependent A of row 1 and dependent B of A. Both end `skipped`
+    in the same pass.
 
 Rows that stay queued, each one change from row 1: the task is in
 `WaitingOnDeps`; the task is in `Running`; a dependency finished 1 hour ago;
@@ -349,6 +355,8 @@ set of mocks:
 
 Files: server/model/agent.go, server/scheduler/filter.go,
 server/pipeline/pending_timeout.go, their tests, and server/rpc/rpc_test.go.
+
+Interfaces:
 
 ```go
 func (a *Agent) PollLabels() (map[string]string, error)
