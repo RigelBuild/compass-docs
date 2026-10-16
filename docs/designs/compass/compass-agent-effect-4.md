@@ -9,36 +9,7 @@ Amendment record of the compass-agent Effect adoption design
 That record's alternative (d) pinned stable Effect 3.x and said a later 3→4
 major would be its own change. This is that change. The parent stays frozen.
 
-Ledger-impact: DL-524.
-
-## Open Questions
-
-1. **Are the G1–G4 replacements acceptable?** (load-bearing) They are
-   grounded in the installed `effect@4.0.5` declarations and a local spike, not
-   ruled. Matt rules on this and Open Question 2 in RIG-5478.
-   **Recommendation:** approve them as written.
-2. **Effect 4 `ManagedRuntime.dispose` interrupts `runFork` fibers.**
-   (load-bearing) In v4, `ManagedRuntime.make` runs every `runFork` fiber in
-   a child scope, and `dispose` says "Closing fiberScope interrupts and awaits
-   every managed fiber" (`effect/dist/ManagedRuntime.js`). v3 did not. The
-   publish-spine and control-source pumps are `runtime.runFork` fibers, and
-   the parent says the spine pump is never interrupted. The normal shutdown
-   in `cli.ts` drains `storage` and `sink` before `transport.close()`. The
-   pinned-model refusal in `cli.ts` closes with no drain. It runs after
-   `createAgentSession`, which on a resumed session appends an interrupted-turn
-   abort record (`sessionManager.appendMessage(interruptedTurnAbort)` in the
-   SDK's `sdk.ts`) through the tee storage. So a durable frame can be in
-   flight there, and v4 now interrupts it.
-   - **A. Drain before close on the refusal path too.** Run the same
-     `storage.drain()` then `sink.drain()` before `transport.close()`. Test: a
-     resumed session with an interrupted turn and an unresolved pinned model
-     commits the abort frame before close.
-   - **B. Keep v3 behavior.** Fork both pumps with
-     `Effect.runForkWith(context)` outside the runtime's fiber scope. Cost: a
-     second fork path, and the pump is orphaned rather than flushed, as in v3.
-
-   **Recommendation: A.** It applies the existing drain-before-close rule to
-   the one path that skips it, and needs no second fork path.
+Ledger-impact: DL-524, DL-529.
 
 ## Problem / Intent
 
@@ -56,6 +27,10 @@ replacement exists.
 Matt, RIG-5438 (2026-10-15): **B, migrate now.** `effect` and
 `@effect/opentelemetry` move to 4.x together in one compass PR.
 
+Matt, RIG-5478 (2026-10-16): **the G1–G4 replacements are approved as
+written**, and **A, drain before close on the pinned-model refusal path**
+(below).
+
 ## Global Constraints
 
 - **Versions:** `effect` and `@effect/opentelemetry` at the same 4.0.x
@@ -67,11 +42,22 @@ Matt, RIG-5438 (2026-10-15): **B, migrate now.** `effect` and
   that import Effect today, plus `session-blobs.ts`, which gains an `effect`
   import (below). `@effect/platform` is removed from the catalog and from
   `packages/compass-agent/package.json`: no file imports it.
-- **No behavior change, except the two named here:** `dispose` (Open
-  Question 2) and `Queue.offerUnsafe` (G2). Every other transport invariant
+- **No behavior change, except the two named here:** `dispose` (below) and
+  `Queue.offerUnsafe` (G2). Every other transport invariant
   in the parent's Global Constraints holds. `effect-smoke.test.ts` is the
   parent's record of Effect semantics, so its cases change where v4 semantics
   change, and the PR lists each changed assertion.
+- **Every path that closes the transport drains first** (DL-529). In v4,
+  `ManagedRuntime.make` runs every `runFork` fiber in a child scope, and
+  `dispose` says "Closing fiberScope interrupts and awaits every managed
+  fiber" (`effect/dist/ManagedRuntime.js`). The publish-spine and
+  control-source pumps are `runtime.runFork` fibers. The normal shutdown in
+  `cli.ts` already runs `storage.drain()` then `sink.drain()` before
+  `transport.close()`. The pinned-model refusal in `cli.ts` closes with no
+  drain, after `createAgentSession`, which on a resumed session appends an
+  interrupted-turn abort record through the tee storage
+  (`sessionManager.appendMessage(interruptedTurnAbort)` in the SDK's
+  `sdk.ts`). The refusal path gains the same drain before close.
 - **The public type surface stays free of `effect`, `@effect/opentelemetry`
   and `@opentelemetry/*` types** (parent constraint,
   `src/transport/export-surface.test.ts`).
@@ -177,6 +163,9 @@ by mutation checks.
 - **G2 with `Queue.takeBetween(q, 0, max)`.** Rejected: v4 treats a
   non-positive bound as 0 and returns `[]` at once, even with a backlog, so
   the trace lane would never drain.
+- **Refusal path: fork the pumps with `Effect.runForkWith(context)` outside
+  the runtime's fiber scope.** Rejected by Matt (RIG-5478): a second fork
+  path, and the pump is orphaned rather than flushed.
 
 ## Plan
 
@@ -205,8 +194,9 @@ Red→green:
 - G2: a trace-lane drain above `PUBLISH_BATCH_MAX` gives `[256, n]`; a mutant
   that drops the `min` turns it red. An empty spine drains without publishing.
 - G3: the `TestClock` retry test pins delays and the attempt count.
-- Open Question 2 (if A): a resumed session with an interrupted turn and an
-  unresolved pinned model commits the abort frame before `transport.close()`.
+- Refusal drain: a resumed session with an interrupted turn and an
+  unresolved pinned model commits the abort frame before `transport.close()`;
+  a mutant that removes the drain turns it red.
 - Export surface: a mutation that re-exports `DURABLE_RETRY_SCHEDULE` from
   `src/index.ts` turns the test red, and so does removing either file from
   the `declare global` allowlist.
@@ -226,3 +216,4 @@ and confirm `main` resolves `effect` 4.x.
 ## Resolved decisions
 
 1. **Effect 4 replaces Effect 3 in compass-agent** (DL-524).
+2. **Every path that closes the transport drains first** (DL-529).
