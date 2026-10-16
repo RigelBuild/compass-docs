@@ -6,14 +6,11 @@ Round 1 asks Q1, Q3 and Q4. Q2 depends on Q1. Q5 applies only if Q1 is C.
 
 ### Q1. What makes a queued workflow time out?
 
-Both options carry the review fixes: the workflow ends `error`, only
-`Info.Pending` tasks count, the clock starts when the dependencies finish, and
-dependents that can never run are skipped in the same pass.
+Both options share everything else in this record.
 
-- **A. Age only, default `72h`.** The workflow times out once its task has been
-  runnable for the timeout. Clears the 7 to 33 day incident. One plan task, no
-  agent matching, no `hostname` gap, no stale agent rows. Cost: a task that can
-  never run holds its check pending for 3 days.
+- **A. Age only, default `72h`.** Clears the 7 to 33 day incident. One plan
+  task, no agent matching, no `hostname` gap, no stale agent rows. Cost: a
+  task that can never run holds its check pending for 3 days.
 - **C. Age and no live matching agent, default `6h`.** A backlog on a pool with
   live agents never trips it. But a pool at zero has no agent rows, so the
   check cannot tell "never" from "not yet", and for scale-from-zero pools C is
@@ -27,8 +24,7 @@ be added later behind the same flag.
 
 ### Q2. Default for `pending-timeout` (depends on Q1)
 
-- **`0`, opt-in.** Upstream-compatible. The consumer deploy must set the
-  variable, or nothing changes for us.
+- **`0`, opt-in.** Upstream-compatible, but our deploy must set it.
 - **`72h`.** For A. About 24 times the worst observed backlog wait.
 - **`6h`.** For C only. With A it errors backlog tasks.
 
@@ -37,13 +33,11 @@ exists to run our server. The plan assumes `72h`.
 
 ### Q3. Where does the reason show?
 
-- **Workflow and step `Error`, state `error`.** Existing fields. The pipeline
-  Errors tab lists `workflow.error` (`workflowsWithErrors` in
-  web/src/lib/pipeline.ts). The bar under the step log shows `step.error` once
-  `finished` is set (`PipelineLog.vue`). No web change.
-- **A new `CancelInfo` field.** Model, API, web and i18n changes, and
-  `CancelInfo` describes a killed or canceled pipeline.
-- **An entry in `pipeline.Errors`.** That list holds config errors today.
+- **Workflow and step `Error`, state `error`.** Existing fields: the Errors
+  tab lists `workflow.error` (`workflowsWithErrors`), and the step log bar
+  shows `step.error` once `finished` is set (`PipelineLog.vue`). No web change.
+- **A new `CancelInfo` field.** Model, API, web and i18n changes.
+- **An entry in `pipeline.Errors`.** That list holds config errors.
 
 **Recommendation:** workflow and step `Error`, state `error`.
 
@@ -51,9 +45,9 @@ exists to run our server. The plan assumes `72h`.
 
 - **The timed-out workflow and the dependents that can never run.** Running
   siblings and `runs_on: failure` dependents continue.
-- **The whole pipeline through `Cancel`.** Also kills running siblings and the
-  `runs_on: failure` workflows that report the failure. `Cancel` ends a
-  never-started pipeline `canceled`, which posts success (Approach).
+- **The whole pipeline through `Cancel`.** Also kills running siblings and
+  `runs_on: failure` workflows, and a never-started pipeline ends `canceled`,
+  which posts success.
 
 **Recommendation:** the timed-out workflow and its dead dependents.
 
@@ -93,81 +87,87 @@ if _, exists := queued[fmt.Sprint(workflow.ID)]; exists {
 }
 ```
 
-The new check runs on those skipped workflows. There is no second scan, and the
-reaper tail finishes the pipeline, posts forge status and publishes the event.
-`orphan-reap-interval` set to `0` turns it off too.
+The new checks run in this pass. The reaper tail finishes the pipeline, posts
+forge status and publishes the event. `pending-timeout` or
+`orphan-reap-interval` set to `0` turns them off.
 
 ### When a queued workflow times out
 
 All must hold:
 
-1. `pending-timeout` is above `0`, and the queue is not paused
-   (`Info.Paused`). A pause is an operator choice, not a stuck task.
-2. Its task is in `Info.Pending`. A task in `Info.WaitingOnDeps` is not a
-   candidate: the autoscaler counts demand only from `queueInfo.Pending`
-   (`calcAgents` in engine/autoscaler.go), so a dependent's pool can sit at
-   zero while its dependency runs. A task in `Info.Running` is leased.
+1. `pending-timeout` is above `0`, and the queue is not paused (`Info.Paused`).
+2. Its task is in `Info.Pending`. `Info.WaitingOnDeps` is excluded: the
+   autoscaler counts demand only from `queueInfo.Pending` (`calcAgents` in
+   engine/autoscaler.go), so a dependent's pool can sit at zero while its
+   dependency runs. `Info.Running` is leased.
 3. The task has been runnable for longer than `pending-timeout`. The clock is
-   the latest of `pipeline.Created`, `pipeline.Reviewed` (set on approval), and
-   `Finished` of each workflow in `task.Dependencies`, from the loaded tree. If
-   a dependency is still pending or running, the task is skipped. These are
-   stored columns and `WithTaskStore` reloads task rows on start, so a restart
-   neither resets nor extends the clock. `task.Created` is not used: older rows
-   hold `0`. A clock of `0` never times out.
-4. Option C only: no live agent matches the task labels (T2).
+   the latest of `pipeline.Created`, `pipeline.Reviewed` (set on approval) and
+   `Finished` of each workflow in `task.Dependencies`, from the loaded tree.
+   All are stored, so a restart neither resets nor extends it. `task.Created`
+   is not used: older rows hold `0`. A clock of `0` never times out.
+4. Every dependency is terminal and lets it run (*Dependents that can never
+   run*).
+5. Option C only: no live agent matches the task labels (T2).
 
-The reaper reads only `ID`, `Labels`, `Dependencies` and `RunOn` from `Info`
-tasks. The fifo changes only `DepStatus` and `AgentID`, under its own lock.
+A blocked pipeline has no task: `Create` returns before `start` while it is
+`StatusBlocked`. Backlog and scale-from-zero tasks wait up to the timeout.
 
 ### Finalizing a timed-out workflow
 
 1. `reapWorkflow` gets the reason. The workflow and each pending step end
-   `error`, with the reason in `Error` and `Finished` set to now, so the step
-   log bar shows it (`PipelineLog.vue` needs `finished`). A started step (a
-   resubmitted lease) ends `killed`, as today. Example reason:
+   `error`, with the reason in `Error` and `Finished` set, so the step log bar
+   shows it. A started step (a resubmitted lease) ends `killed`, as today.
+   Example reason:
    `no agent took this workflow within 72h0m0s (pending-timeout); labels: [type=linux]`.
    Labels are sorted `key=value` pairs, without `woodpecker-ci.org/` labels,
    empty values, `repo` and `org-id`.
 2. Then `Scheduler.CancelWorkflows(ctx, []string{id})`, one ID per call:
    `persistentQueue.ErrorAtOnce` deletes no row when one ID is missing. A
    failed store write leaves the workflow pending for the next pass. A failed
-   cancel is logged: the task is already gone, and a leftover row belongs to a
-   terminal workflow, which `persistentQueue.Poll` drops.
-3. Dependents that can never run are finalized (next section).
-4. The reaper tail finishes the pipeline when nothing is pending or running.
+   cancel is logged (*Stale task rows*).
+3. The tail finishes the pipeline when nothing is pending or running.
    `statusPriorityOrder` (server/pipeline/status.go) ranks `error` above
    running and pending, so a pull request aggregate turns red at once. The
    tail's `if changed && !pipelineEverStarted { status = model.StatusCanceled }`
-   is not applied when any workflow in the tree is `error`, because
-   `convertStatus` (server/forge/github/convert.go) posts `canceled` as
-   success: `case model.StatusCanceled: ... return statusSuccess`.
-5. One `log.Info` line per finalized workflow, with `reason=pending-timeout`
-   or `reason=dependency-timed-out` and the labels. One counter,
-   `woodpecker_pending_workflows_timed_out_total`.
+   is not applied when a workflow in the tree is `error`: `convertStatus`
+   (server/forge/github/convert.go) posts `canceled` as success
+   (`case model.StatusCanceled: ... return statusSuccess`).
+4. One `log.Info` line per finalized workflow, with `reason=pending-timeout`
+   or `reason=dependency-failed` and the labels. The counter
+   `woodpecker_pending_workflows_timed_out_total` counts timeouts.
 
-If an agent takes the task between the `Info` snapshot and step 2, the cancel
-sends it `ErrCancel`, and `checkWorkflowState` makes `RPC.Done` reject its
-report. User `Cancel` has the same race.
+An agent that takes the task after the `Info` snapshot gets `ErrCancel`, and
+`checkWorkflowState` makes `RPC.Done` reject its report.
 
 ### Dependents that can never run
 
-The pass walks the dependents of a finalized workflow among `Info.Pending` and
-`Info.WaitingOnDeps`. A dependent is dead when `Task.ShouldRun` is false for a
-probe `model.Task{RunOn: t.RunOn, DepStatus: {dep: state}}`, where `state` is
-`error` for the timed-out workflow and `skipped` for a dead dependent. A
-default `runs_on` dependent is dead. A `runs_on: failure` dependent runs, and
-the walk stops there.
+Each pass checks every `pending` workflow whose task is in `Info.Pending` or
+`Info.WaitingOnDeps`, so a failed write is retried next pass. `DepStatus` is
+the `State` of each workflow in `task.Dependencies`, from the tree. If one is
+missing or `Running()`, the check waits. Otherwise the workflow is dead when
+`(&model.Task{RunOn: task.RunOn, DepStatus: deps}).ShouldRun()` is false. All
+dependencies count: a `runs_on: failure` dependent of one timed-out and one
+successful workflow is dead.
 
-A dead dependent is finalized with `Cancel`'s helpers:
+A dead workflow ends `skipped` through `Cancel`'s helpers:
 `UpdateWorkflowToStatusSkipped`, and `UpdateStepToStatusSkipped(store, step, 0,
-model.StatusCanceled)` for pending steps, then `CancelWorkflows` with its ID.
-This is done in the same pass for two reasons:
+model.StatusCanceled)` for pending steps, then `CancelWorkflows`. The scan
+repeats until it finalizes nothing. The fifo cannot do it: its skip waits
+until a matching agent polls (`markSkipped` in `impl.Poll`), and the stored
+`DepStatus` stays empty, so after a restart the dependent runs.
 
-- Otherwise the skip waits until a matching agent polls the dependent
-  (`markSkipped` in `impl.Poll`), and the check stays pending all that time.
-- `DepStatus` is never persisted. After a restart a dependent reloads with an
-  empty `DepStatus`, `ShouldRun` returns true, and it runs although its
-  dependency failed.
+### Stale task rows
+
+`persistentQueue.ErrorAtOnce` drops the task from memory before it deletes the
+row. If the delete fails, nothing revisits the row, and a restart reloads it.
+So each pass checks every `TaskList()` row against the workflow state loaded at
+the start of the pass, or `storage.WorkflowLoad` for a pipeline not walked. A
+row whose workflow is terminal or missing goes. If its task is in
+`Info.Pending` or `Info.WaitingOnDeps`, the pass calls what
+`persistentQueue.Poll` calls: `Scheduler.Done` with the workflow state, or
+`Scheduler.Error` when it is missing. Both delete the row. Otherwise it calls
+`storage.TaskDelete`. `Info.Running` rows are left to their lease. `Done`
+passes the real state, so dependents of a stale `success` row are not killed.
 
 ### Matching against live agents (option C only)
 
@@ -187,36 +187,29 @@ maps.Copy(labels, customLabels)
 `RPC.Next` copies `Agent.GetServerLabels()` over the poll labels.
 `Agent.PollLabels` rebuilds that map with `hostname="*"` unless a custom label
 sets it, so a hostname-pinned task never times out. `scheduler.NewLabelFilter`
-wraps the scheduler's own `createFilterFunc`, so the rules exist once. An agent
-counts when its `LastContact` is within `pending-timeout` (Q5). `NoSchedule`
-agents count: the autoscaler sets that flag to drain and clears it to reuse.
-
-### Cases that stay queued
-
-- **Blocked pipelines.** `Create` returns before `start` while the status is
-  `StatusBlocked`, so no task exists.
-- **Backlog and scale from zero.** They wait up to the timeout. With A, only a
-  pool outage longer than 72 hours errors real work.
-- Tasks waiting on dependencies and a paused queue (checks 1 to 3).
-
-Out of scope: a queued task whose pipeline is already terminal. The reaper only
-walks pending and running pipelines.
+wraps `createFilterFunc`, so the rules exist once. An agent counts when
+`NoSchedule` is false, because `RPC.Next` returns before `Poll` for it, and its
+`LastContact` is within `pending-timeout` (Q5). The autoscaler deletes a
+drained agent (`removeDrainedAgents`) or clears the flag (`createAgents`).
 
 ## Alternatives considered
 
-- **Sweep inside `fifo.process`.** The queue has no store, no agent rows and no
-  pipeline times, and the loop holds the fork's ordering rules.
-- **A separate ticker.** A second scan of every active pipeline and a second
-  copy of the reaper tail.
+- **Sweep inside `fifo.process`.** No store, agent rows or pipeline times
+  there, and the loop holds the fork's ordering rules.
+- **A separate ticker.** A second scan and a second reaper tail.
 - **Reject at enqueue when no agent matches.** Breaks scale from zero.
-- **Final state `canceled`.** Posts success on the required check.
-- **Final state `killed`.** Also posts failure, but reads as a user stop, and
-  it ranks below running, so the check stays pending while siblings run.
-- **Candidates from `Info.WaitingOnDeps`, clock from pipeline creation.**
-  Errors dependents whose pool is legitimately at zero.
-- **Queue cancel before the store write.** A failed write leaves a pending
-  workflow with no task. The next pass reaps it as `agent-gone`, and a
-  never-started pipeline ends `canceled`, which posts success.
+- **Final state `canceled`.** Posts success.
+- **Final state `killed`.** Reads as a user stop, and ranks below running.
+- **WaitingOnDeps candidates with a creation clock.** Errors dependents whose
+  pool is at zero by design.
+- **Queue cancel before the store write.** A failed write is then reaped as
+  `agent-gone` and `canceled`: success.
+- **Probe with only the timed-out dependency.** Misses a dead `runs_on:
+  failure` dependent whose other dependency succeeded.
+- **Check dependents only after a timeout in that pass.** A failed write is
+  never retried.
+- **Drop stale queued tasks with `CancelWorkflows`.** Kills dependents of a
+  stale `success` workflow.
 - **Agent match with a short grace (option B).** Every scale-from-zero task
   looks unschedulable until its agent boots.
 
@@ -263,36 +256,41 @@ var pendingWorkflowsTimedOut = promauto.NewCounter(prometheus.CounterOpts{
 
 func runnableSince(p *model.Pipeline, workflows []*model.Workflow, task *model.Task) int64
 func pendingTimeoutReason(task *model.Task, timeout time.Duration) string
-func finalizeDeadDependents(ctx context.Context, storage store.Store, workflows []*model.Workflow, dependents map[string][]*model.Task, parentID string, parentState model.StatusValue) []*model.Workflow
+func treeDepStatus(task *model.Task, workflows []*model.Workflow) (map[string]model.StatusValue, bool)
+func finalizeDeadWorkflows(ctx context.Context, storage store.Store, workflows []*model.Workflow, waiting map[string]*model.Task) []*model.Workflow
+func removeStaleTaskRows(ctx context.Context, storage store.Store, rows []*model.Task, loaded map[string]model.StatusValue, waiting map[string]*model.Task, running map[string]struct{})
 ```
 
-- `reapWorkflow`: a started workflow or step ends `killed`, as today. One not
-  started ends `pendingState`. A non-empty `errMsg` goes into `Error`, and
-  then `Finished` is set too. The existing call passes `model.StatusCanceled`
-  and `""`.
-- `runnableSince` returns `0` when a workflow named in `task.Dependencies` is
-  missing from the tree or still `Running()`. Otherwise it returns the largest
-  of `p.Created`, `p.Reviewed` and each dependency's `Finished`.
-- `pendingTimeoutReason` returns the reason text of the Approach.
-- `finalizeDeadDependents` applies *Dependents that can never run* to
-  `dependents[parentID]`, and recurses with `model.StatusSkipped` into the
-  dependents of each dead one. Each dead one is written first and its results
-  copied into the tree, then cancelled in the queue. A failed write stops that
-  branch. It returns the finalized workflows.
+- `reapWorkflow`: a started workflow or step ends `killed`, as today; one not
+  started ends `pendingState`. A non-empty `errMsg` goes into `Error` and sets
+  `Finished`. The existing call passes `model.StatusCanceled` and `""`.
+- `treeDepStatus` maps each ID in `task.Dependencies` to its workflow's
+  `State`, and returns `false` when one is missing or `Running()`.
+- `runnableSince` returns `0` when `treeDepStatus` returns `false`, else the
+  largest of `p.Created`, `p.Reviewed` and each dependency's `Finished`.
+- `finalizeDeadWorkflows` applies *Dependents that can never run* to each
+  `pending` workflow in `waiting` until a scan finalizes none. A failed write
+  is logged and skipped. It returns the finalized workflows.
+- `removeStaleTaskRows` applies *Stale task rows*. Terminal is
+  `model.IsTerminalStatus(state)` or `model.StatusSkipped`, as in
+  `isTerminalWorkflowState`. `ErrRecordNotExist` is ignored.
 
 In `ReapOrphanedWorkflows`:
 
-1. Next to `queued`, build `pending` (ID to task) from `queueInfo.Pending`
-   and `dependents` (dependency ID to tasks) from `queueInfo.Pending` and
-   `queueInfo.WaitingOnDeps`. Skip both when `pendingTimeout` is `0` or
-   `queueInfo.Paused` is true.
-2. In the `queued` branch, a workflow whose task is in `pending` and whose
-   `runnableSince` is above `0` and before `now - pendingTimeout` goes through
-   `reapWorkflow(..., model.StatusError, reason)`, then `CancelWorkflows`, then
-   `finalizeDeadDependents(..., model.StatusError)`. Set `changed`, add 1 to
-   the counter, and log.
-3. In the tail, apply the `canceled` override only when no workflow in the
+1. Next to `queued`, build `pending` (ID to task) from `queueInfo.Pending`,
+   `waiting` from `queueInfo.Pending` and `queueInfo.WaitingOnDeps`, and
+   `running` from `queueInfo.Running`. With `pendingTimeout` at `0`, steps 2,
+   3 and 5 are skipped.
+2. In the `queued` branch, unless `queueInfo.Paused`: a workflow whose task is
+   in `pending`, whose `treeDepStatus` lets it run, and whose `runnableSince`
+   is above `0` and before `now - pendingTimeout` goes through
+   `reapWorkflow(..., model.StatusError, reason)`, then `CancelWorkflows`. Set
+   `changed`, add 1 to the counter, and log.
+3. After the workflow loop, call `finalizeDeadWorkflows`. A non-empty result
+   sets `changed`. Before the loop, record each workflow's state in `loaded`.
+4. In the tail, apply the `canceled` override only when no workflow in the
    tree is `error`.
+5. After the pipeline loop, call `removeStaleTaskRows` with `persistedTasks`.
 
 ```go
 PendingTimeout time.Duration // server/config.go, after OrphanReapGrace
@@ -302,15 +300,14 @@ server.Config.Server.PendingTimeout = c.Duration("pending-timeout") // cmd/serve
 pipeline.ReapOrphanedWorkflows(ctx, _store, time.Now(), server.Config.Server.OrphanReapGrace, server.Config.Server.PendingTimeout) // cmd/server/server.go
 ```
 
-The docs get `### PENDING_TIMEOUT` after `### ORPHAN_REAP_GRACE`, in the same
-shape: the default, `0` disables, and it needs `ORPHAN_REAP_INTERVAL` above
-`0`.
+The docs get `### PENDING_TIMEOUT` after `### ORPHAN_REAP_GRACE`: the default,
+`0` disables, and it needs `ORPHAN_REAP_INTERVAL` above `0`.
 
 ### T1 tests
 
-Written first, as rows in `TestReapOrphanedWorkflows` with the strict
-`store_mocks.MockStore`, `now` as the clock, a `72h` timeout, and the counter
-read by `testutil.ToFloat64`. Rows that time out:
+Written first, as `TestReapOrphanedWorkflows` rows (strict
+`store_mocks.MockStore`, `now` as clock, `72h` timeout, counter read by
+`testutil.ToFloat64`). Rows that time out or finalize:
 
 1. A pending `type=linux` task, pipeline 73 hours old. Workflow and step end
    `error` with the reason in `Error` and `Finished` set. `CancelWorkflows`
@@ -323,14 +320,30 @@ read by `testutil.ToFloat64`. Rows that time out:
    stays open, and the aggregate rolls up `error`.
 4. Row 1 plus a default dependent in `WaitingOnDeps` and a `runs_on: failure`
    dependent. The first ends `skipped` with a `canceled` step and its own
-   `CancelWorkflows` call. The second is untouched. The counter rises by 1.
-5. `WorkflowUpdate` fails. No `CancelWorkflows`, no counter change.
-6. `CancelWorkflows` fails. The workflow still ends `error`.
+   `CancelWorkflows` call. The second is untouched.
+5. Row 1 plus a `runs_on: failure` dependent of row 1's workflow and of a
+   workflow that ended `success`. It ends `skipped`. While that second
+   workflow is `running`, it stays queued.
+6. A dead dependent in `Info.Pending` whose dependency failed 80 hours ago
+   ends `skipped`, not `error`.
+7. `WorkflowUpdate` fails. No `CancelWorkflows`, no counter change.
+8. `CancelWorkflows` fails. The workflow still ends `error`.
+9. A row in `Info.Pending` whose workflow is `success` gets
+   `Done(ctx, "41", model.StatusSuccess)` and no cancel.
 
 Rows that stay queued, each one change from row 1: the task is in
 `WaitingOnDeps`; the task is in `Running`; a dependency finished 1 hour ago;
 the pipeline was reviewed 1 hour ago; the pipeline is 71 hours old;
 `pendingTimeout` is `0`; the queue is paused.
+
+`TestReapPendingTimeoutNextPass` calls `ReapOrphanedWorkflows` twice on one
+set of mocks:
+
+- Pass 1: the dependent's `WorkflowUpdate` fails. Pass 2: its dependency is
+  already `error`; it ends `skipped`, with its `CancelWorkflows` call.
+- Pass 1: `CancelWorkflows` returns the persistent delete error. Pass 2:
+  `TaskList` still has row `41`, `Info` does not, and `WorkflowLoad(41)`
+  returns it `error`. `TaskDelete("41")` is called once.
 
 ### T2. Live agent match (only if Q1 is C)
 
@@ -347,29 +360,25 @@ func anyAgentTakes(filters []scheduler.FilterFn, task *model.Task) bool
 - `PollLabels` builds the map of *Matching against live agents* and returns a
   new map.
 - `loadLiveAgentFilters` calls `AgentList(&model.ListOptionsWithAll{All:
-  true})` once per pass and keeps agents with `LastContact` within `window`
-  (Q5). On an error, no task times out in that pass.
+  true})` once per pass and keeps agents with `NoSchedule` false and
+  `LastContact` within `window` (Q5). On an error, no task times out.
 - Tests: `TestAgentPollLabels`; `TestNewLabelFilter`; reap rows where a busy
-  or `NoSchedule` live match stays, a match last seen beyond the window times
-  out, a `hostname` task stays, and an `AgentList` error stays.
+  live match stays, a `NoSchedule` match and a match last seen beyond the
+  window time out, and a `hostname` task and an `AgentList` error stay.
 - Parity test: drive `RPC.Next` with the labels the agent sends, as
   `TestRPCNextInjectsReadOnlyNetrc` does, and assert its filter and
   `NewLabelFilter(agent.PollLabels())` agree on a task set without `hostname`.
 
 ## Tasks
 
-- [ ] Before deploy: list stored agents with the admin `GET /api/agents`
-      (50 per page, use `page=`). Note each agent with `type=linux` in
-      `custom_labels` or `filters`, and its `last_contact`. No live match
-      confirms the 5 pipelines cannot run.
-- [ ] T1: add the test rows and the fake's pipeline capture; see rows 1–6
+- [ ] Before deploy: list stored agents (admin `GET /api/agents`, 50 per
+      page). Note any with `type=linux` in `custom_labels` or `filters`, and
+      its `last_contact`. No live match confirms the 5 pipelines cannot run.
+- [ ] T1: write the test rows and `TestReapPendingTimeoutNextPass`; see them
       fail.
-- [ ] T1: add pending_timeout.go with the counter.
-- [ ] T1: change `reapWorkflow`, `ReapOrphanedWorkflows` and the tail.
-- [ ] T1: add the flag, the config field and the wiring.
-- [ ] T1: add `PENDING_TIMEOUT` to the server configuration docs.
+- [ ] T1: add pending_timeout.go, change reap.go, add the flag, the wiring
+      and `PENDING_TIMEOUT` in the server configuration docs.
 - [ ] T2, only if Q1 is C: tests first, then the four functions.
 - [ ] `make lint` and `make test-server` pass.
 - [ ] After deploy, within one reaper interval: the `type=linux` pipelines end
-      `error`, their required check posts failure, and
-      `woodpecker_pending_workflows_timed_out_total` rises.
+      `error`, their required check posts failure, and the counter rises.
