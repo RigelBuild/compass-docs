@@ -815,10 +815,10 @@ each is kept so the executor sees *why*, not just *what*.
 9. **D9 — sessions are not sticky to a box beyond the warm path; a resumed
    session may land on any available Runner.** D8 co-locates the Runner
    with the VMs it manages, so a session's Runner is tied to its box. A
-   session must therefore not depend on staying on one box once it stops
-   running. Session stickiness is warm-path only: a
+   suspended session must therefore not depend on returning to its box.
+   Session stickiness is warm-path only: a
    *running* session is reachable through its box's local vsock, and a
-   stopped session is **suspended to its durable volume**
+   session the lifecycle suspends (not one it closes) is **suspended to its durable volume**
    (`session_id` + volume, the state the session lifecycle already treats as
    durable — the Runner holds no durable session state, only the ephemeral
    `container→session_id` binding it reconstructs on provision, D8). A
