@@ -23,7 +23,7 @@ and the config-passthrough record
 (`docs/designs/agent/compass-agent-config-passthrough/design.md`).
 The record recommends stable names by role and can be updated without blocking
 on a later evidence refresh.
-> Redacted 2026-10-17: private evaluation source and design-location details removed from the public record.
+> Redacted 2026-10-17: non-public details omitted.
 
 ## Problem / Intent
 
@@ -302,7 +302,7 @@ Server registry store via the P2 operator write RPC) + a docs page
 own model selections are RIG-2936's default-profile content.
 Registry defaults are set by role and updated through the same operator RPC;
 the schema and code do not change for data refreshes.
-> Redacted 2026-10-17: private evaluation implementation, source path, model-priority configuration, and missing-spec details removed from the public record.
+> Redacted 2026-10-17: non-public details omitted.
 
 ## Alternatives considered
 
@@ -611,7 +611,7 @@ provider support, with OpenRouter/Bedrock alternate candidates. Store them in
 the Server registry through P2's operator RPC. Write the docs page
 "recommended model per role per provider you hold" using public role-level
 rationale. Refresh registry values through P2's operator RPC.
-> Redacted 2026-10-17: private model-selection evidence source, provider-priority recommendation inputs, and spec location removed from the public record.
+> Redacted 2026-10-17: non-public details omitted.
 Interfaces:
 
 - Consumes: public role-level recommendations when available; the P2 registry
@@ -660,8 +660,8 @@ Interfaces:
    evidence can update values without changing the registry schema.
 3. **(Non-load-bearing) Model-selection evidence.** Recommendations must rest
    on public selection criteria. **Recommendation:** keep the docs page limited
-   to rationale that can be stated without private evaluation materials.
-   > Redacted 2026-10-17: private model-selection spec location and citation details removed from the public record.
+   to rationale that can be stated from public selection criteria.
+   > Redacted 2026-10-17: non-public details omitted.
 
 ## Resolved decisions
 

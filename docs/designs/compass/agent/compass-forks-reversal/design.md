@@ -268,15 +268,17 @@ this record does not require it.
 
 ## Alternatives considered
 
-- **Compass-own fork repos** or per-upstream Copybara spokes — rejected. Matt
-  ruled shared canonical repos: one fork per upstream, with patch work combined.
-  Two forks of one upstream would duplicate patches and recreate the divergence
-  this reversal is meant to end.
+- **Compass-own fork repos** (`RigelBuild/compass-devenv` etc., or reviving the
+  per-upstream Copybara spoke repos) — rejected. Matt ruled shared canonical
+  repos: one fork per upstream, with patch work combined. Two forks of one
+  upstream would duplicate patches and recreate the divergence this reversal
+  is meant to end. Matt's ruling; not relitigated here.
 - **Defer until the reversal can proceed as one coordinated change** — rejected.
   One lane has a shared compatibility prerequisite; the other lanes can sequence
   independently. Waiting for every prerequisite would leave vendored files and
   their maintenance machinery in Compass longer without a correctness benefit.
-> Redacted 2026-10-17: private workstream dependencies, vendored-file counts, and implementation sequencing details removed from the public record.
+  Lanes here sequence on their actual prerequisites only.
+> Redacted 2026-10-17: non-public details omitted.
 
 ## Plan
 

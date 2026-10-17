@@ -189,9 +189,10 @@ the leg; a re-run clears it. If that proves frequent, the Woodpecker fallback
 
 If hosted-runner KVM proves unreliable in practice — for example, if `/dev/kvm`
 is withheld — the fallback is a self-hosted Linux CI runner that supports KVM
-device access. The public contract is the test step below; runner provisioning
+device access, running compass's own pipeline. Compass features are tested in
+compass. The public contract is the test step below; runner provisioning
 and repository enrollment are outside this record.
-> Redacted 2026-10-17: private runner inventory, CI backend and trust posture, and service rollout details removed from the public record.
+> Redacted 2026-10-17: non-public details omitted.
 
 The step shape:
 
@@ -207,13 +208,20 @@ microvm-tests:
     - cd go && go test -tags microvm -race ./...
 ```
 
-The runner must support per-step device mapping. The job grants only `/dev/kvm`
-(not `/dev/vhost-vsock`, per E-D1), never `privileged: true`; it sets
-`COMPASS_REQUIRE_MICROVM=1` so skips fail loudly, and realizes guest-image
-derivations from the binary cache before testing. This matches E-D2's env and
-tag contract, so adopting the fallback is a lane swap, not a redesign. It also
-realizes V8's "CI job (KVM-labeled runner)" (`microvm-runner.md:606-608`).
-> Redacted 2026-10-17: managed-service CI fallback and rollout details removed from the public record.
+The runner must support per-step device mapping, so the step can grant one
+device without widening the container's privileges. The contract this
+fallback fixes:
+
+- The job grants only `/dev/kvm` (not `/dev/vhost-vsock`, per E-D1), never
+  `privileged: true`.
+- It sets `COMPASS_REQUIRE_MICROVM=1` so skips fail loudly.
+- It realizes guest-image derivations from the binary cache before testing.
+
+This matches E-D2's env and tag contract, so adopting the fallback is a lane
+swap, not a redesign. It also realizes V8's "CI job (KVM-labeled runner)"
+(`microvm-runner.md:606-608`). KVM CI for any other deployment is a
+managed-plane concern, out of scope here.
+> Redacted 2026-10-17: non-public details omitted.
 
 ### E-D4 — guest image: derivations beside the agent image, kernel from nixpkgs, a project binary cache (F4)
 

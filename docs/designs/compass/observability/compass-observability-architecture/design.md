@@ -43,7 +43,7 @@ canonical framing is `docs/designs/infra/runtime/compass-elastic-session-runtime
 | --- | --- | --- |
 | **Self-hosted (OSS core, this repo)** | In-app charts from the deployment's own bundled Postgres. Single-team/single-org scope. | Emission off by default; operator points `OTEL_EXPORTER_OTLP_ENDPOINT` at THEIR backend; bundled fan-in collector with `--otel-external` opt-out; dashboard JSON shipped in-repo. |
 | **Multi-tenant deployment — per org** | The SAME in-app data surface, **tenant-scoped**: identical read API, scoped to the org. Plane A is authoritative for usage/spend (see D5). | Per-tenant telemetry export is a managed-plane concern, out of scope here. |
-| **Whole-service operator** | Cross-tenant analytics and billing are managed-plane concerns, out of scope here; the core supplies the tenant-scoped rollup reads and the raw-event export (D1/D5). *(Redacted 2026-10-17: managed product end-state removed from the public record.)* | The fan-in collector exports whole-service telemetry to the operator's own backend (D3). |
+| **Whole-service operator** | Cross-tenant analytics and billing are managed-plane concerns, out of scope here; the core supplies the tenant-scoped rollup reads and the raw-event export (D1/D5). *(Redacted 2026-10-17: non-public details omitted.)* | The fan-in collector exports whole-service telemetry to the operator's own backend (D3). |
 
 Cross-tenant analytics, billing, and control-plane observability are
 managed-plane concerns: they are out of scope here, and are taken up when the
@@ -190,7 +190,7 @@ OSS core never stores:
   across all tenants, and the store behind it, are a managed-plane concern,
   out of scope here. The core builds no OLAP store; it supplies the
   tenant-scoped rollup reads and the raw-event export (D2, D5) that any such
-  store would consume. *(Redacted 2026-10-17: managed analytics details omitted.)*
+  store would consume. *(Redacted 2026-10-17: non-public details omitted.)*
 
 With the classes separated, the store question resolves cleanly — Decision D1.
 
@@ -207,7 +207,7 @@ foundation scales without a re-instrumentation later:
 | Product OLTP (accounts, orgs, sessions, settings) | Bundled Postgres | Managed-plane choice, out of scope here | Route heavy reads to a read replica — never run analytical scans on the primary product database. |
 | Class 2 — billing-grade compute-usage log + derived rollups (D5/D1) | Bundled Postgres, its own store behind the `UsageStore` seam | Managed-plane choice behind the same seam | Swap the Class-2 backend behind the D1 seam if per-org volume ever outgrows Postgres (headroom, not a foregone migration). |
 | Class 1 — ops firehose: metrics, logs, traces (Plane B) | Operator's own Grafana/LGTM backend | The managed operator's own OTLP backend | Govern cardinality at the emission point (Adaptive Metrics/Logs/Traces) — never a SQL DB. |
-| Class 3 — cross-tenant analytics (whole managed service) | Not built in the core | Managed-plane, out of scope here. *(Redacted 2026-10-17: managed data-placement details omitted.)* | Out of scope; the core supplies only the D2 reads and D5 export. |
+| Class 3 — cross-tenant analytics (whole managed service) | Not built in the core | Managed-plane, out of scope here. *(Redacted 2026-10-17: non-public details omitted.)* | Out of scope; the core supplies only the D2 reads and D5 export. |
 
 Two placement rules fall out of the table. **The product database never
 carries analytical scan load** — OLAP-scale scans contending with product OLTP
@@ -840,7 +840,7 @@ cross-record OQ1 reconciliation D6 depends on).
   - **Recommended core seam (for Matt to confirm):** the Solid UI embeds
     `posthog-js`, gated by an **off-by-default enable flag plus a configurable
     PostHog host** — unconfigured means no analytics leave the deployment, and a
-    self-hoster who wants it points the host at their own PostHog; the managed
-    service sets them the same way. PostHog-the-product is a managed-plane and
-    opt-in-self-host choice, never a hard core dependency; the core ships only the
+    self-hoster who wants it points the host at their own PostHog; any other
+    deployment configures the same two settings. PostHog-the-product is an
+    opt-in deployment choice, never a hard core dependency; the core ships only the
     embed and the enable/host seam.
