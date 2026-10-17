@@ -54,9 +54,13 @@ path (T8). DL-559 supersedes the OQ-10 clause of DL-442 unless OQ-1 is (c)
    - (a) Coexist. T8 keeps a jj-vine section; T9 waits until no jj-vine PR
      is open.
    - (b) Close and resubmit. Review history is lost.
-   - (c) Adopt on first submit. All agents author as one App login
-     (`appTokenSource.AppLogin` in `go/internal/forge/githubapp.go`), so the
-     claim cannot be checked.
+   - (c) Adopt on first submit. Agent pushes and Server creates use one App:
+     `forge.NewScopedAppMinter` in `go/server/git_credential.go` and
+     `forge.NewAppTokenSource` in `go/server/serve.go` both take
+     `rc.App.AppID`. `ListMirrorComments` in `go/server/forge_mirror.go`
+     reads that login through an optional `AppLogin` assertion, not a
+     `forge.Provider` method. The forge author cannot name the agent, so
+     the claim cannot be checked.
 
    **Recommendation: (a).** No lost history, no unchecked claim.
 6. **OQ-6 (load-bearing) — another agent's PR in the line.** The jj skill
@@ -67,8 +71,8 @@ path (T8). DL-559 supersedes the OQ-10 clause of DL-442 unless OQ-1 is (c)
      with the same owner. DL-442 rules "grants are owner-level".
    - (c) Refuse the line.
 
-   **Recommendation: (b).** One block everywhere; no agent changes another's
-   text, base, or draft.
+   **Recommendation: (b).** One block everywhere; D2 limits the write to the
+   block.
 7. **OQ-7 (load-bearing) — pre-push gate.** The jj skill says "Every push
    runs the local gate first, through `jj-hp`". The image ships no `jj-hp`
    (`agent-image/toolchain.nix`), and `jj git push` runs no git hooks
@@ -101,6 +105,8 @@ body, require an issue per PR, and let the Server own one stack block.
 - Red → green: failing tests land first (`bun test`; Go `FakeProvider`,
   `pgtest`).
 - Gate: `moon run :ci`; proto edits run `moon run compass-proto:gen`.
+- T3 and T5 start after RigelBuild/compass#2354 (connect-go v2, RIG-5471)
+  merges.
 - Name no private repository or path.
 
 ## Approach
@@ -122,29 +128,53 @@ two new `ForgeCallRequest` arms. Seven tools:
 Subagents edit files only. The Manager commits their work with
 `vcs_commit {workspace}`, run in that workspace's root.
 
-**D2 — PR writes through two Server arms.** `createPullRequest` in
+**D2 — PR writes through Server arms.** `createPullRequest` in
 `go/server/forge.go` calls `rf.author.CreatePullRequest` before
 `recordPullRequest`, so a failed record leaves a PR with no ownership row.
 `submit_stack` (field 17) takes entries bottom to top. Per entry:
 
 1. Find the PR by head in any state, open first. The repo squash-merges and
    deletes merged branches, so a merged or closed hit refuses: "sync first".
-2. On a miss, record a submit intent (caller, repo, head), then create a
-   draft with the issue link through the `createPullRequest` steps.
-3. On an unrecorded hit, record the caller as author if it holds that
-   head's intent (`RecordAuthoredArtifact` is write-once). Else it is
-   foreign (OQ-5, OQ-6).
+2. On a miss, commit a submit intent (caller, repo, head) in its own
+   transaction, then create a draft with the issue link through the
+   `createPullRequest` steps. If the record fails after the create, the
+   entry fails and the intent stays.
+3. On an unrecorded hit, adopt the PR only if the intent names the caller:
+   write the ownership row and the link, with no second create. Else the PR
+   is foreign.
 4. On an own hit, PATCH only changed fields: base, block, header, draft,
    and the text only on `replace_text`.
 
-Then restamp each lower PR whose block changed. `AuthoredArtifactByCoordinate`
-matches `repo = $3` exactly; the new lookup folds GitHub case, as
-`InsertPullRequestIfAbsent` in `queries/pull_requests.sql` does
-(`CASE WHEN $1 = 1 THEN lower(s.repo) ELSE s.repo END`). Each entry result
-carries its own error. Only `ready_head_ref` leaves draft. `stack_status`
-(field 18) is the read twin. `ForgeBroker.idempotencyKey` in
-`packages/compass-agent/src/forge.ts` is per tool call, so the head lookup
-and intent cover model retries.
+The first failed entry stops the call: later entries return `skipped`, and
+no restamp runs. Otherwise the Server restamps each lower PR whose block
+changed. Only `ready_head_ref` leaves draft. `stack_status` (field 18) is the
+read twin.
+
+Rows written here carry a NULL `client_request_id`.
+`forge_authored_artifacts_request_memo_idx` is unique on
+`(agent_account_id, client_request_id)`, so one call key would fail every
+create after the first, after the forge create. The head lookup and the
+intent are the idempotency.
+
+Repo strings are canonical. The intent keys on `ForgeCoord.Normalized()`.
+The ownership row stores the forge's `base.repo.full_name`, the string
+webhooks key on (`wh.Repository.FullName`). `AuthoredArtifactByCoordinate`
+matches `repo = $3` exactly, and `CreatePullRequestWithLink` "keeps the
+caller's repo casing", so the new lookup folds GitHub case, as
+`InsertPullRequestIfAbsent` does
+(`CASE WHEN $1 = 1 THEN lower(s.repo) ELSE s.repo END`). When old rows
+differ only in case, the oldest wins, as write-once authorship does.
+
+Only the author updates a PR, with one exception if OQ-6 is (b): when a
+foreign PR's ownership row names the caller's owner, the Server rewrites its
+stack block only. It strips the compass and jj-vine blocks, stamps the new
+block, and keeps every other byte. Any other foreign write is refused, as is
+every write to an unrecorded PR the caller cannot adopt.
+
+`vcs_retire` closes through `transition_pull_request_state`.
+`transitionPullRequestState` checks only `requireForgeScope`; T5 adds a
+refusal when the PR's ownership row names another agent. A PR with no row,
+such as a jj-vine PR under OQ-5(a), still closes as today.
 
 **D3 — issue and text.** Each PR names its own issue: #2334
 ("Refs RIG-5511") stacks on #2333 (RIG-5510). `vcs_submit` takes a
@@ -209,9 +239,11 @@ FindPullRequestByHead(ctx context.Context, repo, headRef string) (PullRequest, b
 
 GitHub PATCHes `/repos/{repo}/pulls/{n}`; `Ready` runs GraphQL
 `markPullRequestReadyForReview` with a new `NodeID` (`json:"node_id"`) on
-`ghPullDetail`. Lookup: `GET /repos/{repo}/pulls?state=all&head=<owner>:<ref>`;
-merged means non-null `merged_at`. Linear returns `ErrUnsupported`.
-Red → green (`httptest`): PATCH body, ready, hit, miss, merged, 422, Linear.
+`ghPullDetail`. `ghPullDetail.Base` gains `Repo.FullName`
+(`json:"full_name"`), surfaced as `PullRequest.RepoFullName`. Lookup:
+`GET /repos/{repo}/pulls?state=all&head=<owner>:<ref>`; merged means
+non-null `merged_at`. Linear returns `ErrUnsupported`. Red → green
+(`httptest`): PATCH body, ready, hit, miss, merged, `full_name`, 422, Linear.
 
 ### T2 — stack block
 
@@ -253,12 +285,19 @@ message StackStatusRequest {
   string repo = 1;
   repeated string head_refs = 2;
 }
+enum StackEntryStatus {
+  STACK_ENTRY_STATUS_UNSPECIFIED = 0;
+  STACK_ENTRY_STATUS_DONE = 1;
+  STACK_ENTRY_STATUS_FAILED = 2;
+  STACK_ENTRY_STATUS_SKIPPED = 3;  // an entry below failed
+}
 message StackEntryResult {
   string head_ref = 1;
   compass.v1.PullRequest pull_request = 2;
   bool created = 3;
   bool authored = 4;  // the caller authored this PR
   ForgeCallError error = 5;
+  StackEntryStatus status = 6;
 }
 message StackResult {
   repeated StackEntryResult entries = 1;
@@ -276,8 +315,7 @@ Interfaces (`go/internal/store/forge_authored.go`):
 ```go
 type SubmitIntent struct {
 	Provider       ForgeProvider
-	Host           string
-	Repo           string // ForgeCoord.Normalized() form
+	Repo           string // ForgeCoord.Normalized()
 	HeadRef        string
 	AgentAccountID AccountID
 	OwnerUserID    AccountID
@@ -287,15 +325,17 @@ type SubmitIntent struct {
 func (s *Store) RecordSubmitIntent(ctx context.Context, in SubmitIntent) error
 // ErrNotFound on a miss.
 func (s *Store) SubmitIntentForHead(ctx context.Context, provider ForgeProvider, host, repo, headRef string) (SubmitIntent, error)
-// Matches GitHub repos case-insensitively.
+// Folds GitHub case; the oldest row wins.
 func (s *Store) AuthoredArtifactByCoordinateFold(ctx context.Context, provider ForgeProvider, host, repo string, kind ForgeArtifactKind, number uint64) (AuthoredArtifact, error)
 ```
 
 Table `forge_pr_submit_intents` in `migrations/0001_init.sql`: PK
 `(tenant_id, forge_provider, forge_host, repo, head_ref)`, the
 `forge_authored_artifacts` agent/owner FK, RLS; sqlc queries in
-`queries/forge_authored.sql`. Red → green (`pgtest`): another agent's intent
-conflicts; a retry succeeds; mixed case finds the row.
+`queries/forge_authored.sql`. `RecordSubmitIntent` commits on its own.
+Existing rows need no backfill. Red → green (`pgtest`): another agent's
+intent conflicts; a retry succeeds; mixed case finds the row; two rows that
+differ only in case return the oldest.
 
 ### T5 — Server arms
 
@@ -306,12 +346,23 @@ func (s *forgeService) submitStack(ctx context.Context, caller store.AccountID, 
 func (s *forgeService) stackStatus(ctx context.Context, caller store.AccountID, call *compassv1internal.ForgeCallRequest, req *compassv1internal.StackStatusRequest) *compassv1internal.ForgeCallResult
 ```
 
-`forgeStore` adds the T4 methods. Red → green (`FakeProvider`): a new entry
-without `issue_ref` fails; two entries make two drafts with chained bases; a
-retry creates nothing; a merged head refuses; a lost record is adopted with
-no duplicate; a foreign PR follows OQ-6; no change sends no PATCH; an agent
-block is replaced; a mid-stack 429 keeps earlier results; only
-`ready_head_ref` leaves draft.
+`forgeStore` adds the T4 methods; `transitionPullRequestState` gains the D2
+authorship refusal. Red → green (`FakeProvider`):
+
+- A new entry without `issue_ref` fails; two entries make two drafts with
+  chained bases; a retry creates nothing; a merged head refuses.
+- Two new entries under one call key: two PRs, two rows with a NULL key.
+- The store write after a create fails; a retry ends with one PR on the
+  forge and one ownership row.
+- An unchanged entry sends no PATCH; an agent-written block is replaced.
+- A mid-stack 429: earlier entries done, that entry failed, later entries
+  skipped with no provider call.
+- Only `ready_head_ref` leaves draft.
+- Under OQ-6(b), a same-owner foreign body changes only inside the block; a
+  foreign title, base, draft, or `replace_text` write and a different-owner
+  foreign PR are refused.
+- A same-scope close of a PR another agent authored is refused with no
+  provider call; a PR with no row closes.
 
 ### T6 — jj runner and local tools
 
@@ -385,8 +436,8 @@ first. Files DL-559.
 
 - **D1** (DL-535 on ruling) — Local jj and push in the agent; PR writes in
   the Server; seven Manager tools.
-- **D2** (DL-536 on ruling) — Any-state head lookup, intent before create,
-  updates only by the author.
+- **D2** (DL-536 on ruling) — Any-state head lookup, a durable intent
+  before create, and updates and closes only by the author.
 - **D3** (DL-537 on ruling) — An issue per PR; text composed once.
 - **D4** (DL-538 on ruling) — Sync without rewriting foreign bookmarks; one
   Server-owned stack block.
