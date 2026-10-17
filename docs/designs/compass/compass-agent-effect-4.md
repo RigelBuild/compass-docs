@@ -42,19 +42,21 @@ written**, and **A, drain before close on the pinned-model refusal path**
 
 ## Global Constraints
 
-- **Versions:** `effect` and `@effect/opentelemetry` at the same 4.0.x
-  patch, in the root `package.json` catalog, in one PR. Use the newest patch
-  that clears `bunfig.toml`'s `minimumReleaseAge` (5 days) when E1 is opened:
-  4.0.5 (published 2026-10-15) clears on 2026-10-20. Do not add a
-  `minimumReleaseAgeExcludes` entry for `effect`.
+- **Versions:** `effect` and `@effect/opentelemetry` pinned exactly (no
+  caret) to the same 4.0.x patch, in the root `package.json` catalog, in one
+  PR. A caret on `effect` would let it resolve a later minor than
+  `@effect/opentelemetry`. Use the newest patch that clears `bunfig.toml`'s
+  `minimumReleaseAge` (5 days) when E1 is opened: 4.0.5 (published
+  2026-10-15) clears on 2026-10-20. Do not add a `minimumReleaseAgeExcludes`
+  entry for `effect`.
 - **Scope:** `packages/compass-agent` only. The port touches the 14 files
   that import Effect today, plus `session-blobs.ts`, which gains an `effect`
   import (below). `@effect/platform` is removed from the catalog and from
   `packages/compass-agent/package.json`: no file imports it.
 - **No production behavior change, except the refusal-path drain** (DL-529,
   below). v4's `dispose` and `Queue.offerUnsafe` semantics differ from v3's;
-  the drain covers the first, and the second reaches only the smoke test
-  (G2). Every other transport invariant in the parent's Global Constraints
+  the drain covers the first, and the second does not change production (G2).
+  Every other transport invariant in the parent's Global Constraints
   holds. `effect-smoke.test.ts` is the parent's record of Effect semantics,
   so its cases change where v4 semantics change, and the PR lists each
   changed assertion.
@@ -160,8 +162,11 @@ spine.
 
 Separately, v4 `Queue.offerUnsafe` on a full sliding queue now evicts the
 oldest message; v3's rejected the newest. The trace lane already uses the
-effectful `offer`, so production is unchanged. The smoke test's v3 case
-flips to the v4 behavior.
+effectful `offer`. The spine also calls `Queue.offerUnsafe(wake, undefined)`
+on its one-slot `wake` latch in `enqueueTrace`, `enqueuePriority` and
+`drain`. Every wake entry is `undefined`, so evicting one for another leaves
+the latch full either way: one pending wake. The smoke test's v3 case flips
+to the v4 behavior.
 
 **G3. `Schedule.fromDelays` is gone.** The durable retry ladder
 `[50, 200, 800, 2000]` becomes `Schedule.recurs(4)` with
