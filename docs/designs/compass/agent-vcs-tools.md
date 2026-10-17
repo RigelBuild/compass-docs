@@ -427,12 +427,15 @@ pushes all of them). It then closes the PR through
 `<name>` unless already deleted, repeats the dry run, checks the plan
 deletes exactly `<name>`, and runs `jj git push --deleted --remote origin`.
 Each step skips when done, so a retry after a failed push finishes the job.
+After `jj git fetch`, a closed PR with no `<name>@origin` and no pending
+deletion is already retired and returns success.
 (`-b <name>` does not push a deleted bookmark.)
 `packages/compass-agent/src/cli.ts` adds the tools to `nativeTools`.
 Red → green: each D4 refusal and a missing issue fail before push; push
 precedes the broker call; `vcs_retire` deletes exactly one remote ref; a
 pending deletion of another ref refuses with no close and no local change;
-a retry after a failed push completes with no second close.
+a retry after a failed push completes with no second close; a retry after
+a push that landed but reported an error returns success.
 
 ### T8 — prompt, skill, and DL-558
 
