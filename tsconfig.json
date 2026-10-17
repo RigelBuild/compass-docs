@@ -1,10 +1,7 @@
 {
-	"extends": "astro/tsconfigs/strict",
+	"extends": ["@rigelbuild/tsconfig/base.json", "astro/tsconfigs/strict"],
 	"compilerOptions": {
-		"strict": true,
-		"noEmit": true,
-		"types": ["bun-types"],
-		"verbatimModuleSyntax": true
+		"types": ["bun-types"]
 	},
 	"include": [
 		"site/.astro/types.d.ts",
