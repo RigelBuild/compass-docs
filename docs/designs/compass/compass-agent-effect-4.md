@@ -51,11 +51,13 @@ written**, and **A, drain before close on the pinned-model refusal path**
   that import Effect today, plus `session-blobs.ts`, which gains an `effect`
   import (below). `@effect/platform` is removed from the catalog and from
   `packages/compass-agent/package.json`: no file imports it.
-- **No behavior change, except the two named here:** `dispose` (below) and
-  `Queue.offerUnsafe` (G2). Every other transport invariant
-  in the parent's Global Constraints holds. `effect-smoke.test.ts` is the
-  parent's record of Effect semantics, so its cases change where v4 semantics
-  change, and the PR lists each changed assertion.
+- **No production behavior change, except the refusal-path drain** (DL-529,
+  below). v4's `dispose` and `Queue.offerUnsafe` semantics differ from v3's;
+  the drain covers the first, and the second reaches only the smoke test
+  (G2). Every other transport invariant in the parent's Global Constraints
+  holds. `effect-smoke.test.ts` is the parent's record of Effect semantics,
+  so its cases change where v4 semantics change, and the PR lists each
+  changed assertion.
 - **Every path that closes the transport drains first** (DL-529). In v4,
   `ManagedRuntime.make` runs every `runFork` fiber in a child scope, and
   `dispose` says "Closing fiberScope interrupts and awaits every managed
