@@ -7,80 +7,25 @@ Tracker: RIG-5558
 > header). Unless a path says otherwise, every path is in
 > [RigelBuild/compass](https://github.com/RigelBuild/compass).
 
-Ledger-impact: pending. D1–D4 file as DL-535..DL-538 when the open
-questions close. DL-558 supersedes the DL-142 clause that keeps
-`jj-vine submit` as the push path (T8). DL-559 supersedes the OQ-10 clause
-of DL-442 (T9).
+Ledger-impact: DL-535..DL-538 file D1–D4. DL-558 supersedes the DL-142
+clause that keeps `jj-vine submit` as the push path (T8). DL-559 supersedes
+the OQ-10 clause of DL-442 (T9). DL-561 supersedes the DL-052 clause "The
+agent keeps a push-scoped git credential" (OQ-8, T9, T10).
 
 **Named decisions this record introduces:** D1–D4 in
 [Decisions](#decisions).
 
-## Open Questions
-
-1. **OQ-8 (load-bearing) — where the push credential lives.** The Server
-   mints a scoped App token and returns it as a file secret
-   (`brokeredSecretResolver.ResolveFor` in `go/server/git_credential.go`:
-   `Delivery: secrets.DeliveryFile`). `agentHost.Start` in
-   `go/internal/runner/host.go` installs it in the agent home
-   (`h.materializer.Install(ctx, handle.ID(), handle.HomeDir(), handle.WorkspaceUID(), resolved)`),
-   and `go/internal/runtime/secrets_materialize.go` routes the gh credential
-   to `~/.config/gh/hosts.yml`, "writing 0600 files". Any process with the
-   agent UID can read it. A local OMP tool or a stdio MCP server runs as
-   that UID with the same files as `bash`, so it is not a boundary. Runner
-   egress is default-deny (`EgressPolicy.NftScript` in
-   `go/internal/runtime/egress.go`: `policy drop`). The `--egress-allow` help
-   in `go/cmd/compass-runner/main.go` says "Agents that push with jj-vine
-   need github.com and api.github.com". `ForgeCallRequest`
-   (`ExecuteForgeCallAsAccount` in `go/server/forge.go`) carries forge API
-   calls, not git objects.
-   - (a) Server push. `vcs_submit` sends a `git bundle` of the own commits
-     (`<base>..<tips>`) in the `submit_stack` call. The Server applies it to
-     a per-repo bare mirror and pushes with its own App token, then runs D2.
-     The agent keeps a read-only token (`contents: read`,
-     `pull_requests: read`) for clone and fetch; a raw push fails at the
-     forge.
-   - (b) Credential sidecar: a separate UID in the agent pod holds the write
-     token and pushes; the tool calls it over a socket. This adds a process
-     per agent and does not help OQ-6.
-   - (c) Keep the agent push with the narrowed token now; move it later.
-
-   **Recommendation: (a).** The write credential leaves the agent UID, and
-   the Server holds the objects it needs for OQ-6. Limits: the first hop
-   caps a message at `maxAgentMessageBytes = agentmsg.MaxBytes` (16 MiB,
-   `go/internal/runner/gateway/gateway.go`). The tool serializes the whole
-   `ForgeCallRequest`, bundle and entries, and refuses it over 15 MiB with
-   that reason. Mirrors need storage caps, and the Server rebase needs `git`
-   (T10). Fetch through the Server mirror is
-   [future direction](#future-direction).
-2. **OQ-2 (load-bearing) — what RIG-1882 becomes.** The push guard draft
-   (RigelBuild/docs PR #13, DL-507..DL-510, not merged) blocks protected
-   pushes, merges, and writes outside an owner allowlist.
-   - (a) Narrow it: block every remote VCS write in `bash` and `eval` and
-     name the tool to use.
-   - (b) Keep the draft; redirect DL-510 to `vcs_submit`.
-   - (c) Drop RIG-1882.
-
-   **Recommendation: (c) if OQ-8 is (a), else (a).** Under OQ-8(a) the agent
-   holds only read scopes, so the forge refuses a raw push, merge, or PR
-   write, and the Server checks scope on every write it makes. A guard would
-   only add a second refusal. Under OQ-8(c) the agent still holds a write
-   token, and (a) is the narrow guard.
-3. **OQ-9 (load-bearing) — pre-push time limit.** Under the OQ-7 ruling,
-   `vcs_submit` runs the repo's pre-push hook before push. T7's timeout
-   behavior follows this ruling.
-   - (a) Fail open: after 120 s the tool stops the hook, pushes, and reports
-     the timeout.
-   - (b) Fail closed: refuse the push.
-
-   **Recommendation: (a).** CI on the PR is the main gate, and the hook only
-   catches cheap mistakes early.
-
 ## Rulings
 
 Matt ruled on 2026-10-17 in the review threads of RigelBuild/docs PR #39.
+No open questions remain.
 
 - **OQ-1 — agent token.** If the agent keeps any forge token, it has
   `pull_requests: read`. Raw PR edits fail; `gh` PR reads work.
+- **OQ-2 — RIG-1882.** Dropped. Under OQ-8 the agent holds only read
+  scopes, so the forge refuses a raw push, merge, or PR write, and a push
+  guard would only add a second refusal. The push guard draft
+  (RigelBuild/docs PR #13, DL-507..DL-510) closes unmerged.
 - **OQ-3 — issue check.** The Server checks that the issue exists at
   create. Accepted formats are the user's own: GitHub `#12` and
   `owner/repo#12`, and a Linear key for any team the user has configured.
@@ -95,15 +40,27 @@ Matt ruled on 2026-10-17 in the review threads of RigelBuild/docs PR #39.
   line. When a line holds a PR another agent authored under the same owner
   (DL-442: "grants are owner-level"), the Server rebases and pushes that
   bookmark and tells the owning agent. On a rebase conflict it pushes
-  nothing and asks the owning agent to resolve. This needs the Server to
-  hold the repo and push (OQ-8). The jj skill rule to "base the later
-  change on the tip of the first PR's line" only worked around missing
-  coordination.
+  nothing and asks the owning agent to resolve. The jj skill rule to "base
+  the later change on the tip of the first PR's line" only worked around
+  missing coordination.
 - **OQ-7 — pre-push gate.** `vcs_submit` runs cheap format and lint checks
   through the repo's own configured hook runner, not a runner Compass picks.
   The Setup agent installs basic hooks in a repo that has none. CI on the
   PR is the main gate, because full suites do not fit small agent compute.
-  Time limit: OQ-9.
+- **OQ-8 — push credential.** Server push. `vcs_submit` sends a git bundle
+  of the own commits; the Server applies it to a per-repo mirror and pushes
+  with its App token (T10). The agent keeps a read-only token for clone and
+  fetch. Today the push token is a file secret
+  (`brokeredSecretResolver.ResolveFor` in `go/server/git_credential.go`)
+  written 0600 into the agent home, and a local OMP tool or stdio MCP server
+  runs as the same UID as `bash`, so neither can protect it. The first hop
+  caps a message at `maxAgentMessageBytes = agentmsg.MaxBytes` (16 MiB,
+  `go/internal/runner/gateway/gateway.go`), so the tool refuses a
+  serialized call over 15 MiB.
+- **OQ-9 — pre-push time limit.** Fail open. After 120 s the tool stops the
+  hook and pushes. The result tells the agent that the hook timed out and
+  that it must find out why and fix the hook, in its own change, so the
+  next submit runs it in time.
 
 ## Problem / Intent
 
@@ -114,8 +71,10 @@ body, require an issue per PR, and let the Server own one stack block.
 
 ## Global Constraints
 
-- The agent gains no credential. Every PR write and, under OQ-8(a), every
-  push goes through the Server forge broker (DL-052).
+- The agent gains no credential. Every PR write and every push goes through
+  the Server forge broker (DL-052, DL-561).
+- Every forge object the Server creates for an agent gets an ownership row,
+  even when the create's own record step fails (D2 write intents).
 - The Server alone writes the owner header (DL-050) and the stack block, and
   strips both from agent text.
 - No `@connectrpc` import outside `packages/compass-agent/src/transport/**`.
@@ -135,10 +94,10 @@ body, require an issue per PR, and let the Server own one stack block.
 ## Approach
 
 **D1 — hybrid split.** Local jj work runs in the agent
-(`packages/compass-agent/src/vcs.ts`). PR writes run in the Server through
-two new `ForgeCallRequest` arms. The push location depends on OQ-8; this
-record describes the recommended shape, a Server push from a bundle
-(T10). Seven tools:
+(`packages/compass-agent/src/vcs.ts`). Push and PR writes run in the
+Server: the agent sends a bundle, and the Server pushes it from its mirror
+(T10) and writes the PRs through three new `ForgeCallRequest` arms. Seven
+tools:
 
 | Tool | Approval | Does |
 | --- | --- | --- |
@@ -153,6 +112,29 @@ record describes the recommended shape, a Server push from a bundle
 Subagents edit files only. The Manager commits their work with
 `vcs_commit {workspace}`, run in that workspace's root.
 
+**How `vcs_*` and `forge_*` fit together.** The `vcs_*` tools own
+branches and the PRs built from them. The `forge_*` tools in
+`packages/compass-agent/src/forge.ts` keep issues, comments, reviews,
+reads, and subscriptions:
+
+| Need | Tool |
+| --- | --- |
+| Find or create the issue a PR needs | `forge_list_issues`, `forge_get_issue`, `forge_create_issue` |
+| Push and create or update PRs | `vcs_submit` (`submit_stack`) |
+| Close a PR and delete its branch | `vcs_retire` (`retire_head`) |
+| Stack shape, checks, authorship | `vcs_pr_status` (`stack_status`) |
+| Reviews, threads, and the full PR | `forge_get_pull_request` |
+| Comment, review, follow a PR | `forge_comment_on_pull_request`, `forge_submit_review`, `forge_subscribe` |
+
+T7 removes `forge_create_pull_request` from the agent toolset. Its
+description says "head_ref must be a branch you ALREADY pushed with your
+own git credential", and after T9 the agent cannot push. The
+`create_pull_request` arm stays as the create step inside `submit_stack`.
+`forge_transition_pull_request_state` stays for reopen. Like `vcs_retire`,
+it is author-only after T5. Both tool families reach `ExecuteForgeCallAsAccount` in
+`go/server/forge.go`, so scope checks, the owner header, and ownership rows
+are the same for both.
+
 **D2 — PR writes through Server arms.** `createPullRequest` in
 `go/server/forge.go` creates on the forge first, then records:
 
@@ -162,18 +144,40 @@ pr, err := rf.author.CreatePullRequest(ctx, req.GetRepo(), forge.CreatePR{
 if fe := s.recordPullRequest(ctx, rf, id, caller, sessionID, call.GetClientRequestId(), req.GetRepo(), pr, wire, link); fe != nil {
 ```
 
-So a failed record leaves a PR with no ownership row.
+So a failed record leaves a PR with no ownership row. `createIssue` has the
+same gap, and comments and reviews get no row at all (the comment arms
+"mint no artifact coordinate"). The fix is a write intent, and it covers
+every Server create made for an agent. `mirror_messages` already recovers
+through its own lease and `compass-mirror:` marker, so it is left as is.
+
+1. Before the forge call, the Server commits a `forge_write_intents` row
+   in its own transaction: caller, owner, session, coordinate, kind (issue,
+   PR, comment, review), parent number, and head for a PR.
+2. The create carries the intent id. A body ends with
+   `<!-- compass:write <id> -->`, as `mirror.WithMarker` ends a mirror
+   post, and the Server strips any such marker from agent text first. On
+   Linear, the intent id is the create's own `id` input, as
+   `CommentOnIssue` already sends `clientID`.
+3. After success, one transaction writes the ownership row (issue and PR
+   in `forge_authored_artifacts`; comment and review keep the forge key on
+   the intent row) and marks the intent done.
+4. When the forge refuses the create, the intent is marked failed. On a
+   timeout, a 5xx, or a failed record, it stays pending.
+5. The same call retried, or a Server sweep of pending intents older than
+   one minute, finds the object and records it: a PR by head, a Linear
+   object by id, and a GitHub issue, comment, or review by the marker,
+   listing from the intent's time. When nothing is found within one hour,
+   the intent is marked failed. The forge then holds nothing to own.
+
 `submit_stack` (field 17) takes entries bottom to top. Per entry:
 
 1. Find the PR by head in any state, open first. The repo squash-merges and
    deletes merged branches, so a merged or closed hit refuses: "sync first".
-2. On a miss, commit a submit intent (caller, repo, head) in its own
-   transaction, then create a draft with the issue link through the
-   `createPullRequest` steps. If the record fails after the create, the
-   entry fails and the intent stays.
-3. On an unrecorded hit, adopt the PR only if the intent names the caller:
-   write the ownership row and the link, with no second create. Else the PR
-   is foreign.
+2. On a miss, create a draft with the issue link through the
+   `createPullRequest` steps, under a PR write intent.
+3. On an unrecorded hit, adopt the PR only if a pending intent names the
+   caller and the head: write the ownership row and the link, with no
+   second create. Else the PR is foreign.
 4. On an own hit, PATCH only changed fields: base, block, header, draft,
    and the text only on `replace_text`.
 
@@ -238,17 +242,23 @@ the team key on Linear". `refs.Parse` reads a Linear key (`TEAM-12`, any
 2–10 character team key) or `owner/repo#12`; the tool expands a bare `#12`
 to the PR's own repo first. `resolveIssueLink` in `go/server/forge.go`
 refuses a forge with no provider: "forge: no provider configured for the
-issue's coordinate". The Server then reads the issue with `GetIssue`. Not
-found, including a team key the user has not connected, refuses. An outage
-allows and says so.
+issue's coordinate". The Server then reads the issue with `GetIssue` at
+create and refuses unless the tracker returns it as an open issue. Not
+found refuses, including a team key the user has not connected. A closed
+issue refuses. A GitHub PR number also refuses: `/issues/{n}` returns PRs
+too, so T1 carries `ghIssue.PullRequest` through to `forge.Issue`. A
+tracker outage fails the entry as retryable and creates nothing, so no PR
+is ever created against an issue nobody checked.
 
-The tools compose the agent's content. A segment's first commit is
-`roots(<below>..<bookmark>)`. The title is its subject plus `(RIG-12)`; the
-body is its description plus `Refs <issue>`. Only a first commit takes
-`sections`, one per `.github/PULL_REQUEST_TEMPLATE.md` heading, checked
-against the template limits. Text is written at create and kept until
-`vcs_submit {text}` replaces it, because the jj skill says "Never amend a
-pushed commit".
+The tools push the commits as the agent made them. Nothing is squashed or
+rewritten: the bundle holds every own commit, and each PR shows each of
+its commits. Only the PR title and body come from one commit, the
+segment's first, `roots(<below>..<bookmark>)`. The title is its subject
+plus `(RIG-12)`; the body is its description plus `Refs <issue>`. Only a
+first commit takes `sections`, one per `.github/PULL_REQUEST_TEMPLATE.md`
+heading, checked against the template limits. Text is written at create
+and kept until `vcs_submit {text}` replaces it, because the jj skill says
+"Never amend a pushed commit".
 
 **D4 — stack, sync, and one block.** The own commits are
 `::<tip> ~ ::(trunk() | untracked_remote_bookmarks())`. The tip is the
@@ -264,20 +274,24 @@ Sync tracks a remote bookmark only if `stack_status` says the caller
 authored its PR.
 
 Before push the tool refuses conflicts, merges, empty descriptions, two
-bookmarks on one commit, unpublished commits above the tip, and a fork:
-`(descendants(<own>) & bookmarks()) ~ ::<tip>` is not empty. It then runs
+bookmarks on one commit, unpublished commits above the tip, a bookmark with
+no PR and no issue, and a fork:
+`(descendants(<own>) & bookmarks()) ~ ::<tip>` is not empty. The no-issue
+refusal tells the agent to find an issue that fits with
+`forge_list_issues`, or to create one with `forge_create_issue` when none
+does, then submit again. The Manager prompt says the same (T8). It then runs
 the repo's own pre-push hook with the inputs a real push gives it:
 `git hook run --ignore-missing --to-stdin=<file> pre-push -- origin <url>`,
 where the file holds one `<local ref> <local sha> <remote ref> <remote sha>`
 line per own bookmark. The repo's hook runner decides what runs; OQ-9
 bounds the time. `jj git push` runs no git hooks (jj 0.45.1, checked), and
-under OQ-8(a) the agent does not push at all, so the tool calls the hook.
+the agent does not push at all (OQ-8), so the tool calls the hook.
 
-Under OQ-8(a), `vcs_submit` runs `git bundle create` for
-`<base>..<own bookmarks>` and sends it with `submit_stack`. The Server
-fetches the bundle into its mirror, checks that each bookmark's commit is
-in it, and pushes the own bookmarks with its App token before the PR
-writes. A foreign base must already be on the forge.
+`vcs_submit` then runs `git bundle create` for `<base>..<own bookmarks>`
+and sends it with `submit_stack`. The Server fetches the bundle into its
+mirror, checks that each bookmark points at the agent's own commit, and
+pushes those exact commits with its App token before the PR writes. A
+foreign base must already be on the forge.
 
 Each bookmark is one PR, based on the bookmark below, the foreign base, or
 trunk. The block sits between `<!-- compass:stack -->` and
@@ -304,6 +318,8 @@ type UpdatePR struct {
 
 UpdatePullRequest(ctx context.Context, repo string, number uint64, u UpdatePR) (PullRequest, error)
 FindPullRequestByHead(ctx context.Context, repo, headRef string) (PullRequest, bool, error)
+// FindByWriteMarker looks for the object a write intent created.
+FindByWriteMarker(ctx context.Context, repo string, kind WriteKind, parent uint64, intentID string, since time.Time) (WrittenRef, bool, error)
 ```
 
 GitHub PATCHes `/repos/{repo}/pulls/{n}`; `Ready` runs GraphQL
@@ -313,9 +329,13 @@ GitHub PATCHes `/repos/{repo}/pulls/{n}`; `Ready` runs GraphQL
 (`json:"full_name"`), surfaced as `PullRequest.RepoFullName`, so a create
 records the canonical name with no extra read. Lookup:
 `GET /repos/{repo}/pulls?state=all&head=<owner>:<ref>`; merged means
-non-null `merged_at`. Linear returns `ErrUnsupported`. Red → green
-(`httptest`): PATCH body, ready, hit, miss, merged, `full_name` on create
-and on read, 422, Linear.
+non-null `merged_at`. `forge.Issue` gains `IsPullRequest`, set from
+`ghIssue.PullRequest`. `FindByWriteMarker` lists issues, issue comments, or
+reviews created since the intent and matches `<!-- compass:write <id> -->`;
+Linear reads the object by the intent id. Linear PR calls return
+`ErrUnsupported`. Red → green (`httptest`): PATCH body, ready, hit, miss,
+merged, `full_name` on create and on read, 422, a PR number read as an
+issue, a marker hit and miss per kind, Linear.
 
 ### T2 — stack block
 
@@ -386,58 +406,78 @@ message StackResult {
 `client_request_id` comment ("oneof arms 2-11, 14-16") becomes
 `2-11, 14-19`. Red → green: buf gates.
 
-### T4 — store: submit intent and case-folded lookup
+### T4 — store: write intents and case-folded lookup
 
-Interfaces (`go/internal/store/forge_authored.go`):
+Interfaces (`go/internal/store/forge_write_intents.go`):
 
 ```go
-type SubmitIntent struct {
+type WriteIntent struct {
+	ID             string
 	Provider       ForgeProvider
 	Host           string // ForgeCoord.Host, as forgeCoordinate resolves it
 	Repo           string // ForgeCoord.Normalized()
-	HeadRef        string
+	Kind           WriteKind // issue, PR, comment, review
+	Parent         uint64    // issue or PR number for a comment or review
+	HeadRef        string    // PR only
 	AgentAccountID AccountID
 	OwnerUserID    AccountID
+	SessionID      string
 }
 
-// ErrConflict when another agent holds the head.
-func (s *Store) RecordSubmitIntent(ctx context.Context, in SubmitIntent) error
+// A PR intent: ErrConflict when another agent holds the head; the caller's own retry returns its row.
+func (s *Store) RecordWriteIntent(ctx context.Context, in WriteIntent) (WriteIntent, error)
 // ErrNotFound on a miss.
-func (s *Store) SubmitIntentForHead(ctx context.Context, provider ForgeProvider, host, repo, headRef string) (SubmitIntent, error)
+func (s *Store) PRIntentForHead(ctx context.Context, provider ForgeProvider, host, repo, headRef string) (WriteIntent, error)
+// One transaction: the ownership row (issue, PR) or the forge key (comment, review), then done.
+func (s *Store) CompleteWriteIntent(ctx context.Context, id string, a *AuthoredArtifact, forgeKey string) error
+func (s *Store) FailWriteIntent(ctx context.Context, id string) error
+func (s *Store) PendingWriteIntents(ctx context.Context, olderThan time.Time, limit int) ([]WriteIntent, error)
 // Folds GitHub case; the oldest row wins.
 func (s *Store) AuthoredArtifactByCoordinateFold(ctx context.Context, provider ForgeProvider, host, repo string, kind ForgeArtifactKind, number uint64) (AuthoredArtifact, error)
 ```
 
-Table `forge_pr_submit_intents` in `migrations/0001_init.sql`: PK
-`(tenant_id, forge_provider, forge_host, repo, head_ref)`, the
-`forge_authored_artifacts` agent/owner FK, RLS; sqlc queries in
-`queries/forge_authored.sql`. `RecordSubmitIntent` commits on its own.
-Existing rows need no backfill. Red → green (`pgtest`): another agent's
-intent conflicts; a retry succeeds; the same repo and head on two hosts are
-two intents; mixed case finds the row; two rows that differ only in case
-return the oldest.
+Table `forge_write_intents` in `migrations/0001_init.sql`: PK
+`(tenant_id, id)`; state pending, done, or failed; `forge_key` and
+`created_at`; a unique index on `(tenant_id, forge_provider, forge_host,
+repo, head_ref)` for PR rows; the `forge_authored_artifacts` agent/owner
+FK; RLS. A done comment or review row is that object's ownership record.
+sqlc queries go in `queries/forge_write_intents.sql`. `RecordWriteIntent`
+commits on its own. Existing rows need no backfill. Red → green
+(`pgtest`): another agent's PR intent for a head conflicts; a retry
+returns the same row; the same repo and head on two hosts are two
+intents; complete writes the row and the state together or neither;
+pending lists only old pending rows; mixed case finds the authored row;
+two rows that differ only in case return the oldest.
 
-### T5 — Server arms
+### T5 — Server arms and write intents
 
-Interfaces (`go/server/forge.go`):
+Interfaces (`go/server/forge.go`, `go/server/forge_write_sweep.go`):
 
 ```go
 func (s *forgeService) submitStack(ctx context.Context, caller store.AccountID, sessionID string, call *compassv1internal.ForgeCallRequest, req *compassv1internal.SubmitStackRequest) *compassv1internal.ForgeCallResult
 func (s *forgeService) stackStatus(ctx context.Context, caller store.AccountID, call *compassv1internal.ForgeCallRequest, req *compassv1internal.StackStatusRequest) *compassv1internal.ForgeCallResult
 func (s *forgeService) retireHead(ctx context.Context, caller store.AccountID, call *compassv1internal.ForgeCallRequest, req *compassv1internal.RetireHeadRequest) *compassv1internal.ForgeCallResult
+// sweepWriteIntents runs each minute and resolves pending intents (D2).
+func (s *forgeService) sweepWriteIntents(ctx context.Context) error
 ```
 
-`forgeStore` adds the T4 methods; `transitionPullRequestState` gains the D2
-authorship refusal. `submitStack` resolves `issue_ref` and checks it with
-`GetIssue` (D3). Red → green (`FakeProvider`, T10 fake mirror):
+`forgeStore` adds the T4 methods. `createIssue`, `createPullRequest`,
+`commentOnIssue`, `commentOnPullRequest`, and `submitReview` write under an
+intent (D2). `transitionPullRequestState` gains the D2 authorship refusal.
+`submitStack` resolves `issue_ref` and checks it with `GetIssue` (D3).
+Red → green (`FakeProvider`, T10 fake mirror):
 
 - A new entry without `issue_ref` fails; two entries make two drafts with
   chained bases; a retry creates nothing; a merged head refuses.
-- `TEAM-12` for an unconfigured team and a not-found issue refuse; an
-  outage allows with a warning.
+- `TEAM-12` for an unconfigured team, a not-found issue, a closed issue,
+  and a PR number refuse; an outage fails the entry as retryable with no
+  create.
 - Two new entries under one call key: two PRs, two rows with a NULL key.
-- The store write after a create fails; a retry ends with one PR on the
-  forge and one ownership row.
+- For each create kind, the store write after the forge create fails: a
+  retry, or the sweep alone, ends with one object on the forge and one
+  ownership record; an agent-written `compass:write` marker is stripped.
+- A create the forge refused leaves a failed intent; a pending intent with
+  nothing on the forge after one hour turns failed.
 - An unchanged entry sends no PATCH; an agent-written block is replaced.
 - A mid-stack 429: earlier entries done, that entry failed, later entries
   skipped with no provider call.
@@ -486,22 +526,29 @@ the rebase; a foreign base is never a rebase source; a conflict is reported.
 
 `vcs_submit` syncs, checks, runs the pre-push hook (D4, OQ-9), builds the
 bundle, then calls `submit_stack` (`ready_head_ref` = tip on `ready`); it
-refuses trunk and a serialized call over 15 MiB. `vcs_retire` calls
-`retire_head`, then deletes the local bookmark and fetches. A closed PR
-with no `<name>@origin` returns success, so a retry is safe.
-`packages/compass-agent/src/cli.ts` adds the tools to `nativeTools`.
-Red → green: each D4 refusal and a missing issue fail before the broker
-call; a hook failure refuses; a test hook receives `origin`, the URL, and
-one stdin line per own bookmark; a hook past the OQ-9 limit is stopped and
-handled as OQ-9 rules; the bundle names every own bookmark; a call whose
-bundle plus large entry bodies passes 15 MiB refuses with no broker call,
-and one just under passes the gateway; `vcs_retire` changes no local state
-when `retire_head` fails.
+refuses trunk and a serialized call over 15 MiB. A hook past 120 s is
+stopped and the push goes on; the result says "pre-push hook timed out
+after 120 s: find out why and fix the hook in a change of its own".
+`vcs_retire` calls `retire_head`, then deletes the local bookmark and
+fetches. A closed PR with no `<name>@origin` returns success, so a retry is
+safe. `packages/compass-agent/src/cli.ts` adds the tools to `nativeTools`.
+`createForgeTools` in `packages/compass-agent/src/forge.ts` drops
+`forge_create_pull_request` (D1), and the name list in `forge.test.ts`
+changes first. Red → green: each D4 refusal fails before the broker call;
+the no-issue refusal names `forge_list_issues` and `forge_create_issue`; a
+hook failure refuses; a test hook receives `origin`, the URL, and one stdin
+line per own bookmark; a hook past 120 s is stopped, the push runs, and the
+result carries the fix instruction; the bundle holds every own commit with
+its own ID; a call whose bundle plus large entry bodies passes 15 MiB
+refuses with no broker call, and one just under passes the gateway;
+`vcs_retire` changes no local state when `retire_head` fails.
 
 ### T8 — prompt, skill, cutover, and DL-558
 
 `config/prompts/manager/SYSTEM.md` and `config/skills/jj/SKILL.md` name the
-tools and drop `jj-vine submit` and `jj-hp`. Red → green:
+tools and drop `jj-vine submit` and `jj-hp`. They say every PR needs an
+issue: find one that fits, or create one when none does. They also say a
+pre-push timeout means the agent fixes the hook. Red → green:
 `packages/compass-agent/src/vcs-prompt.test.ts` fails on `jj-vine submit`.
 The Setup agent's prompt installs a basic pre-push hook (format and lint)
 in a repo that has none. Cutover (OQ-5): for each open jj-vine PR, the
@@ -519,7 +566,7 @@ Runs after the T8 cutover. Drop `jjVine` and `[jj-vine]` from
 `gitCredentialPermissions` to `contents: read`, `pull_requests: read`,
 pinned in `git_credential_test.go` first. The agent egress allowlist keeps
 `github.com` and `api.github.com` for fetch and `gh` reads; the read-only
-token is what blocks writes. Files DL-559.
+token is what blocks writes. Files DL-559 and DL-561.
 
 ### T10 — Server mirror and push
 
@@ -555,8 +602,8 @@ nothing; an apply over either cap refuses.
 - [ ] T1 — provider update and lookup
 - [ ] T2 — stack block
 - [ ] T3 — proto
-- [ ] T4 — store: submit intent and case-folded lookup
-- [ ] T5 — Server arms
+- [ ] T4 — store: write intents and case-folded lookup
+- [ ] T5 — Server arms and write intents
 - [ ] T6 — jj runner and local tools
 - [ ] T7 — submit, retire, PR status, and wiring
 - [ ] T8 — prompt, skill, cutover, and DL-558
@@ -565,24 +612,22 @@ nothing; an apply over either cap refuses.
 
 ## Future direction
 
-Out of scope. The Server mirror in T10 can grow into the remote agents talk
-to instead of the forge: the Server runs extra checks before anything
-leaves, which matters most for public repos, and keeps git and GitHub
-compatibility because users stay on GitHub. Agents would then fetch from
-the mirror too. References: [Redesigning source
-control](https://www.anthropic.com/engineering/redesigning-source-control)
-(server-side commits and rebases, clients always online) and
-[Twigg](https://github.com/twigg-vc/monorepo) (open-source stacked-change
-review with a git mirror).
+Out of scope; tracked in RIG-5665. Agents need not stay on git inside
+Compass. The internal VCS can follow
+[Scion](https://www.anthropic.com/engineering/redesigning-source-control)
+(server-side commits and rebases, no push),
+[Twigg](https://github.com/twigg-vc/monorepo) (stacked commits, git
+mirror), and Piper as closely as possible. GitHub mirroring stays, because
+users stay on GitHub. The T10 mirror is the first step.
 
 ## Decisions
 
-- **D1** (DL-535 on ruling) — Local jj in the agent; PR writes and, per
-  OQ-8, push in the Server; seven Manager tools.
-- **D2** (DL-536 on ruling) — Any-state head lookup, a durable intent
-  before create, author-only updates and closes, and Server-managed
-  same-owner foreign PRs in a line.
-- **D3** (DL-537 on ruling) — An issue per PR in the user's formats,
-  checked to exist; text composed once.
-- **D4** (DL-538 on ruling) — Linear lines, sync, the repo's own pre-push
-  hook, and one Server-owned stack block.
+- **D1** (DL-535) — Local jj in the agent; push and PR writes in the
+  Server from a bundle; seven Manager tools beside the `forge_*` tools.
+- **D2** (DL-536) — A write intent before every Server create, so no
+  created object lacks an owner; any-state head lookup; author-only
+  updates and closes; Server-managed same-owner foreign PRs in a line.
+- **D3** (DL-537) — An issue per PR in the user's formats, checked open at
+  create; commits pushed as made; text composed once.
+- **D4** (DL-538) — Linear lines, sync, the repo's own pre-push hook with a
+  120 s fail-open limit, and one Server-owned stack block.
