@@ -419,15 +419,17 @@ the rebase; a foreign base is never a rebase source; a conflict is reported.
 
 `vcs_submit` syncs, checks, runs `jj git push --remote origin -b <own>…`,
 then `submit_stack` (`ready_head_ref` = tip on `ready`); it refuses trunk.
-`vcs_retire` refuses a PR it did not author, closes it through
-`transition_pull_request_state`, then runs `jj bookmark delete <name>`,
-`jj git push --deleted --dry-run --remote origin`, and checks that the plan
-deletes exactly `<name>` before `jj git push --deleted --remote origin`.
+`vcs_retire` refuses a PR it did not author. Before any write it runs
+`jj git push --deleted --dry-run --remote origin` and refuses if any
+bookmark or tag is already pending deletion (`--deleted` pushes all of
+them). It then closes the PR through `transition_pull_request_state`, runs
+`jj bookmark delete <name>`, repeats the dry run, checks the plan deletes
+exactly `<name>`, and runs `jj git push --deleted --remote origin`.
 (`-b <name>` does not push a deleted bookmark.)
 `packages/compass-agent/src/cli.ts` adds the tools to `nativeTools`.
 Red → green: each D4 refusal and a missing issue fail before push; push
-precedes the broker call; `vcs_retire` deletes exactly one remote ref, and
-refuses when the dry run lists any other bookmark.
+precedes the broker call; `vcs_retire` deletes exactly one remote ref; a
+pending deletion of another ref refuses with no close and no local change.
 
 ### T8 — prompt, skill, and DL-558
 
