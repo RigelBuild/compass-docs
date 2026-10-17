@@ -141,12 +141,20 @@ their v3 names and shapes.
 **G1. `Logger.remove(Logger.defaultLogger)` is gone.** Use
 `Logger.layer([Logger.tracerLogger])`. It replaces the logger set, so the
 result equals v3's (the default set in both is the console logger plus the
-tracer logger). v4 no longer logs a fiber that ends with an unhandled error,
-so the parent's reason, not reporting a handled lane failure twice, no longer
-applies. The layer now only keeps explicit `Effect.log*` calls off the
-console. The spike's smoke tests prove no `console.*` call for an
-`Effect.log*` call and for a failing `runtime.runFork` that logs, and that
-the log is an event on the exported span.
+tracer logger). In v4, `runtime.runFork` does not log a fiber that ends with
+an unhandled error. Outside the `ai` and `cluster` modules, which
+compass-agent does not import, the only v4 path that does is `Runtime.makeRunMain`: it
+wraps the program in `Effect.tapCause(..., cause => ... Effect.logError(cause))`
+unless `disableErrorReporting` is set (`effect/dist/Runtime.js`).
+compass-agent never calls `makeRunMain` or a `runMain` built on it; every
+Effect runs on the transport `ManagedRuntime` through `runFork`,
+`runPromise` or `runSync` in `control-source.ts`, `frame-sink.ts` and
+`publish-spine.ts`. So the parent's no-double-report invariant holds, and
+the port must not add a `runMain` entry. The layer keeps explicit
+`Effect.log*` calls off the console. The spike's smoke tests prove no
+`console.*` call for an `Effect.log*` call and for a failing
+`runtime.runFork` that logs, and that the log is an event on the exported
+span.
 
 **G2. `Queue.takeUpTo` is gone, and `Queue.takeAll` waits while empty.**
 `dist/Queue.d.ts` documents `takeAll` as "Takes all currently available
