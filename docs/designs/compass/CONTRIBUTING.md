@@ -1,11 +1,15 @@
 # Authoring design records in Compass
 
+> New Compass records are authored here, in `RigelBuild/docs`. Claim decision
+> ids with this repository's `bun run claim` (see the root README). The tool
+> paths below describe the older in-repo flow in `RigelBuild/compass`.
+
 Compass is a **public** repository. Design records under `docs/designs/` are
 published verbatim to the engineering-docs site, so a record must carry no dead
 private-repo artifacts and must never expose a colleague's security analysis in
 a form they did not intend to publish.
 
-These five rules are the standing policy for every design record authored here
+These rules are the standing policy for every design record authored here
 going forward. Rules 1-4 match the sanitization the one-shot migration applied
 to records imported from out of tree (new records should be
 written this way from the start so they need no migration); rule 5 governs what
