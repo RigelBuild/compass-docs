@@ -4,23 +4,44 @@
 		"ignoreCase": true
 	},
 	"patterns": [
-		{ "source": "\\borion\\b", "flags": "i" },
-		{ "source": "\\bsealed/[a-z]", "flags": "i" },
+		{
+			"source": "\\borion\\b",
+			"flags": "i"
+		},
+		{
+			"source": "\\bsealed/[a-z]",
+			"flags": "i"
+		},
 		{
 			"source": "\\bsealed\\s+[\\w.-]+(?:/[\\w.-]+)*\\.(?:ts|tsx|js|jsx|go|nix|md|json5?|ya?ml|toml|sh|py|rs|lock)\\b",
 			"flags": "i"
 		},
-		{ "source": "\\bsealed-(?:repo|monorepo|docs|private)\\b", "flags": "i" },
-		{ "source": "\\bsealed's\\b", "flags": "i" },
+		{
+			"source": "\\bsealed-(?:repo|monorepo|docs|private)\\b",
+			"flags": "i"
+		},
+		{
+			"source": "\\bsealed's\\b",
+			"flags": "i"
+		},
 		{
 			"source": "\\bsealed (repo|monorepo|design corpus|platform|convention|PR #)",
 			"flags": "i"
 		},
-		{ "source": "\\bSEA-\\d+\\b", "flags": "" }
+		{
+			"source": "\\bSEA-\\d+\\b",
+			"flags": ""
+		}
 	],
-	"ignore": ["orion-ref-gate"],
+	"ignore": [],
 	"carveOutPaths": ["ref-gate.config.json", "bun.lock"],
 	"carveOutPrefixes": [],
-	"allowlist": {},
+	"allowlist": {
+		"docs/designs/compass/agent/portable-operating-guidance/design.md": "Names the tools/orion-ref-gate gate in RigelBuild/compass, not the private repo",
+		"docs/designs/compass/infra/ci/compass-ci-job-decomposition/design.md": "Names the tools/orion-ref-gate gate in RigelBuild/compass, not the private repo",
+		"docs/designs/compass/infra/runtime/compass-guest-image-artifact/design.md": "Names the tools/orion-ref-gate gate in RigelBuild/compass, not the private repo",
+		"docs/designs/compass/repo/compass-design-docs-reorg/design.md": "Names the tools/orion-ref-gate gate in RigelBuild/compass, not the private repo",
+		"docs/designs/compass/server/compass-gateway-oauth-enrollment/design.md": "Names the tools/orion-ref-gate gate in RigelBuild/compass, not the private repo"
+	},
 	"remediationDoc": "README.md"
 }
