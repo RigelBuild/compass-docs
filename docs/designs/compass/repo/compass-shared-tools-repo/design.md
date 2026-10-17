@@ -4,7 +4,7 @@
 
 Compass and another consumer each keep their own copy of the same repository
 tools, and the copies drift. A fix can land in one copy and not the other.
-> Redacted 2026-10-17: private consumer identity and CI configuration details removed from the public record.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 Intent: move tools used by both consumers into one new public repo, and have
 each consumer pin it so each tool has one copy. This record folds in RIG-4184
@@ -15,7 +15,7 @@ first slice.
 
 An inventory compared Compass's public tooling with that of another consumer.
 Consumer-side findings are omitted here.
-> Redacted 2026-10-17: private consumer file inventory, measured diffs, CI and Renovate configuration, and pin details removed from the public record.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 | Compass tool or config | Compass-side scope | Decision |
 | --- | --- | --- |
@@ -41,13 +41,13 @@ same PR. No shim or re-export remains.
 
 The port base is Compass's public copy. Additional shared behavior is written
 as new public code and tested with synthetic fixtures.
-> Redacted 2026-10-17: private-only implementation differences removed from the public record.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 ### Config, not literals
 
 Shared tools accept per-consumer configuration rather than hardcoding ledger,
 reference-gate, or counter values.
-> Redacted 2026-10-17: private ledger inventory and counter-partition details removed from the public record.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 The CLIs keep their environment inputs (`REPO`, `PR_NUMBER`, `GH_TOKEN`,
 `DL_CLAIM_TOKEN`, `RENOVATE_TOKEN`). Every tool also reads `GATE_ROOT`, default
@@ -61,7 +61,7 @@ every error today. CI only checks for non-zero, so no workflow changes.
 
 CI jobs that invoke a package bin need to install it first. Those jobs use a
 frozen lockfile so each install is checked against the selected dependency set.
-> Redacted 2026-10-17: private CI workflow and secret-handling details removed from the public record.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 ### Pinning (OQ1: npm)
 
@@ -72,7 +72,7 @@ frozen lockfile so each install is checked against the selected dependency set.
 | Rev-pin JSON | A `{repo, ref, rev}` file plus a fetch step before each run | No separate registry | Each consumer writes its own fetch step. The tools' npm dependencies need a separate install. No typed imports. Local runs need the fetch too. |
 | Nix flake input | Flake input, locked by the consumer's lock file | Content-addressed and nix-native | Each bun tool would need a nix package build, and moon and `tsc` cannot typecheck against a store path. |
 
-> Redacted 2026-10-17: private consumer pin mechanism and pin inventory details removed from the public record.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 TS tools ship as npm packages, so a tool bump is an ordinary catalog PR with
 release notes. Per OQ5, first-party pins skip the release-age cooldown in
@@ -89,7 +89,7 @@ These steps have no IaC path, so they go to Matt as one human-action issue.
 
 The related Nix-tooling record covers the shared builder question. This record
 moves no Nix code. The shared repo's Nix exports remain separate tooling work.
-> Redacted 2026-10-17: private builder comparison details removed from the public record.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 ### What may move (the public boundary)
 
@@ -99,7 +99,7 @@ A tool qualifies only if all three conditions hold:
    run unchanged.
 2. It holds no consumer-specific literal; those values come from configuration.
 3. Its tests use synthetic fixtures only.
-> Redacted 2026-10-17: private consumer names, paths, surfaces, counters, hosts, and record citations removed from the public record.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 Enforcement:
 
@@ -108,14 +108,14 @@ Enforcement:
 - Port PRs start from public code. New shared behavior is implemented independently
   against public requirements and tested with synthetic fixtures.
 - Matt is CODEOWNER and approves every PR, as in compass.
-> Redacted 2026-10-17: private-name gate configuration and private-only feature details removed from the public record.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 ### Drift prevention after migration
 
 No local copy is left to drift. Consumers pin exact package versions, and fixes
 reach each consumer through its package update. Any skew is a version difference,
 not a fork.
-> Redacted 2026-10-17: private consumer pin-update and Renovate timing details removed from the public record.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 ### Alternatives considered
 
@@ -344,7 +344,7 @@ Interfaces: consumes the T3–T6 releases; produces the config files above.
 
 Lands in: another consumer. It adopts shared packages, supplies its own
 configuration, points CI at the package bins, and removes local copies.
-> Redacted 2026-10-17: private consumer file, CI, and counter-configuration details removed from the public record.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 Interfaces: consumes the T3–T6 releases.
 
@@ -359,7 +359,7 @@ Interfaces: consumes T4; edits `legs` in `docs/designs/ledger.config.json`.
 
 The related Nix-tooling record addresses the builder question. This record's
 T10 closes when that record merges.
-> Redacted 2026-10-17: private Nix file comparison and inventory details removed from the public record.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 ### Out of scope
 
@@ -375,8 +375,9 @@ CI is separate work. The public DL counter service (`dl.rigel.build`) does not m
 - [ ] T4 — Port `design-ledger-gate` onto a list of ledgers.
 - [ ] T5 — Port `dl-claim` and `dl-reconcile` onto `LedgerConfig`.
 - [ ] T6 — Move `renovate-preflight`.
+- [ ] T7 — Cut compass over and delete its six local tools.
 - [ ] T8 — Cut another consumer over and delete its local copies.
-  > Redacted 2026-10-17: private consumer local-copy and CI cutover details removed from the public record.
+  > Redacted 2026-10-17: non-public implementation details omitted.
 - [ ] T9 — Turn on compass's extra ledger legs.
 - [ ] T10 — Write the shared Nix tooling inventory record.
 
@@ -388,7 +389,7 @@ CI is separate work. The public DL counter service (`dl.rigel.build`) does not m
   `RigelBuild/meissa`, the public shared infrastructure repo (RIG-4469).
 - **OQ3 — additional ledger-gate behavior:** implemented as new public code with
   synthetic fixtures.
-  > Redacted 2026-10-17: private-only implementation-specific feature details removed from the public record.
+  > Redacted 2026-10-17: non-public implementation details omitted.
 - **OQ4 — install in secret-holding jobs:** a full
   `bun install --frozen-lockfile`.
 - **OQ5 — cooldown:** every first-party pin skips the release-age cooldown, in

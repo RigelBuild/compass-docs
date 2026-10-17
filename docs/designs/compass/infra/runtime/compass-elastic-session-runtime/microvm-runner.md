@@ -805,13 +805,13 @@ each is kept so the executor sees *why*, not just *what*.
      co-location already makes local. The transport-consolidation
      record stands.
 
-   **Out of scope for this record:** fleet box provisioning and session
-   scheduling, the Runner→Server telemetry fan-in, and any message-bus adoption.
-   NATS/JetStream may fit a trusted orchestration tier for Runner→Server fan-in,
-   durable session logs, or inter-Runner scheduling, but is a **bad** fit for
-   the untrusted agent↔Runner hop and is not adopted here. This record is scoped
+   **Out of scope for this record:** fleet box provisioning, session
+   scheduling, the Runner→Server telemetry fan-in, and any message bus for
+   them. These are managed-plane concerns, out of scope here. A message bus
+   is a **bad** fit for the untrusted agent↔Runner hop and is not adopted
+   here. This record is scoped
    to the per-box microVM backend only.
-   > Redacted 2026-10-17: managed fleet control-plane roadmap and service-specific rollout details removed from the public record.
+   > Redacted 2026-10-17: fleet orchestration details omitted.
 9. **D9 — sessions are not sticky to a box beyond the warm path; a woken
    session reschedules onto any available Runner.** D8 co-locates the Runner
    with the VMs it manages, which raises a hyperscaler idle-scaledown wrinkle:
@@ -838,15 +838,15 @@ each is kept so the executor sees *why*, not just *what*.
    obligations carry **no new V-task** here — they are exercised by the
    parent's P2 volume-lifecycle work and the D5→C3 suspend/resume machinery
    once it lands; V6's isolation suite verifies the backend boots from the
-   box-independent volume path it is handed. **Out of scope (managed-plane):** the
-   scheduling that picks a Runner, idle detection + box drain/deprovision,
-   on-demand reprovision on wake, any warm-affinity optimization, and the
-   durable-storage mechanism (network-attached vs object-store) — which **MUST**
-   carry the same per-tenant isolation and at-rest protection the live volume
-   gets from V6's mount-ns sandbox, so suspended session state is never
-   cross-tenant readable. This decision fixes the *direction* (non-sticky,
-   reschedule-on-wake) and the backend contract that enables it; the fleet
-   mechanism is the control plane's.
+   box-independent volume path it is handed. **Out of scope (managed-plane):**
+   how a Runner is picked, when sessions are suspended, and fleet lifecycle.
+   The durable-storage mechanism **MUST** carry the same per-tenant isolation
+   and at-rest protection the live volume gets from V6's mount-ns sandbox, so
+   suspended session state is never cross-tenant readable. This decision
+   fixes the *direction* (non-sticky, reschedule-on-wake) and the backend
+   contract that enables it; the fleet mechanism is the
+   control plane's, a managed-plane concern.
+   *(Redacted 2026-10-17: fleet lifecycle details omitted.)*
 
 ### Deferred (non-load-bearing, resolved in implementation)
 

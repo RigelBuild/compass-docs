@@ -646,7 +646,7 @@ Interfaces:
       surface, no live effective-backend display in v1).
 - [ ] P5 — Defaults + docs (Owner: compass-obs) — day-1 stable-name
       registry set seeded via the operator RPC, recommended-models docs
-      page, RIG-2562 refresh path (operator registry write).
+      page, and refreshes from public role-level recommendations via the operator RPC.
 
 ## Open Questions
 

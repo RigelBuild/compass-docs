@@ -5,7 +5,7 @@
 The shared-tools record asks whether the public Nix builder should be shared.
 This record keeps the public builder change separate from consumer-specific
 configuration.
-> Redacted 2026-10-17: private consumer builder comparison, file inventory, pins, and build-output measurements removed from the public record.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 ## Inventory
 
@@ -21,7 +21,7 @@ and environments.
 | `tools/renovate/agent-image-fod-vehicle.nix`, `tools/renovate/ui-fod-vehicle.nix` | Compass FOD hash vehicles. |
 | `devenv.nix`, `agent-image/devenv.nix`, `flake.nix`, `agent-image/entrypoint.nix`, `apps/ui/dist.nix`, `guest-image/default.nix`, `guest-image/assembly-tests.nix` | Compass shells, images, and builds. |
 
-> Redacted 2026-10-17: private consumer file inventory and builder-call-site details removed from the public record.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 ## Approach
 
@@ -31,7 +31,7 @@ Each consumer keeps its own copy of the builder. Two changes do it:
   `stdenv.hostPlatform.isLinux`. The change does not alter derivation outputs.
 - **R2, another consumer:** adopt the public builder with consumer-specific
   configuration.
-> Redacted 2026-10-17: private consumer implementation diff, CI image, Renovate and pin configuration, and measured parity details removed from the public record.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 The public change lands first, so the consumer can adopt the updated builder.
 
@@ -41,7 +41,7 @@ There is no shared source and no drift check, so the copies can drift again.
 Downloaded release pins do not prevent changes to builder logic from drifting.
 The public change is measured against equal inputs to keep its derivation
 outputs stable.
-> Redacted 2026-10-17: private consumer drift measurements and implementation-level builder comparison removed from the public record.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 ## Not reconciled
 
@@ -49,7 +49,7 @@ outputs stable.
 - **Local-path comments.** These remain specific to each repository.
 - **The toolchain hash-refresh script.** This TypeScript utility is outside the
   Nix builder change; moving shared upgrade scripts is handled separately.
-> Redacted 2026-10-17: private consumer pin versions, update cadence, local path references, and private script diff details removed from the public record.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 ## Alternatives considered
 
@@ -61,7 +61,7 @@ outputs stable.
 - **Keep both copies and add a drift check.** Rejected by the parent record.
 - **Adopt another consumer's builder in Compass.** Rejected because it would
   couple the public derivation to consumer-specific assumptions.
-> Redacted 2026-10-17: private file comparison, exact drift measurements, private paths, and pin coupling details removed from the public record.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 ## Global Constraints
 
@@ -97,7 +97,7 @@ Acceptance:
 ### R2 — Another consumer adopts Compass's builder
 
 Lands in: another consumer. Described here by role only.
-> Redacted 2026-10-17: private consumer file paths, CI and dev-shell callers, implementation instructions, and acceptance details removed from the public record.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 Change: adopt the public builder while retaining consumer-specific configuration.
 
@@ -105,7 +105,7 @@ Change: adopt the public builder while retaining consumer-specific configuration
 
 Pin versions and the hash-refresh script (see Not reconciled); consumer-specific
 toolchain derivatives; the Go toolchain; Compass's env helpers and FOD vehicles.
-> Redacted 2026-10-17: consumer-specific toolchain configuration and build details removed from the public record.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 ## Tasks
 

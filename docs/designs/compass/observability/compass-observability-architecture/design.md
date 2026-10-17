@@ -186,11 +186,11 @@ OSS core never stores:
   rollup, not an event firehose: bounded by a single org's own activity even at
   managed scale, because each org's data is separated. It never sees cross-tenant
   firehose volume.
-- **Class 3 — cross-tenant managed analytics (whole managed service, for
-  Rigel).** PostHog-scale product analytics across ALL tenants is where a
-  ClickHouse-class OLAP genuinely belongs — a managed-plane concern, out of
-  scope here. Any big-scale analytics dep, if ever, is a managed-plane
-  adoption, not this repo's and not now.
+- **Class 3 — cross-tenant analytics (whole managed service).** Analytics
+  across all tenants, and the store behind it, are a managed-plane concern,
+  out of scope here. The core builds no OLAP store; it supplies the
+  tenant-scoped rollup reads and the raw-event export (D2, D5) that any such
+  store would consume. *(Redacted 2026-10-17: managed analytics details omitted.)*
 
 With the classes separated, the store question resolves cleanly — Decision D1.
 
@@ -207,7 +207,7 @@ foundation scales without a re-instrumentation later:
 | Product OLTP (accounts, orgs, sessions, settings) | Bundled Postgres | Managed-plane choice, out of scope here | Route heavy reads to a read replica — never run analytical scans on the primary product database. |
 | Class 2 — billing-grade compute-usage log + derived rollups (D5/D1) | Bundled Postgres, its own store behind the `UsageStore` seam | Managed-plane choice behind the same seam | Swap the Class-2 backend behind the D1 seam if per-org volume ever outgrows Postgres (headroom, not a foregone migration). |
 | Class 1 — ops firehose: metrics, logs, traces (Plane B) | Operator's own Grafana/LGTM backend | The managed operator's own OTLP backend | Govern cardinality at the emission point (Adaptive Metrics/Logs/Traces) — never a SQL DB. |
-| Class 3 — cross-tenant analytics (whole managed service) | Not built in the core | Managed-plane, out of scope here. *(Redacted 2026-10-17: managed data-placement roadmap removed from the public record.)* | A purpose-built OLAP fed from Postgres by CDC is a replication config, not a re-instrumentation. |
+| Class 3 — cross-tenant analytics (whole managed service) | Not built in the core | Managed-plane, out of scope here. *(Redacted 2026-10-17: managed data-placement details omitted.)* | Out of scope; the core supplies only the D2 reads and D5 export. |
 
 Two placement rules fall out of the table. **The product database never
 carries analytical scan load** — OLAP-scale scans contending with product OLTP
