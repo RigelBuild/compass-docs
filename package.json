@@ -10,7 +10,7 @@
 		"gate": "design-ledger-gate --config design-ledger.config.json",
 		"ref-gate": "ref-gate --config ref-gate.config.json",
 		"claim": "dl-claim --config design-ledger.claim.config.json",
-		"deploy": "wrangler pages deploy site/dist --project-name docs --branch main"
+		"deploy": "bun site/scripts/deploy.ts"
 	},
 	"dependencies": {
 		"@astrojs/check": "0.9.10",
