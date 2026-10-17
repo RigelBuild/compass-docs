@@ -4,6 +4,8 @@ const PROJECT_NAME = "docs";
 const COMMENT_MARKER = "<!-- docs-preview -->";
 const SITE_LABEL = "Rigel public design docs";
 
+const PREVIEW_COMMENT_AUTHOR = "github-actions[bot]";
+
 export interface DeployEnv {
 	GITHUB_EVENT_NAME?: string;
 	GITHUB_HEAD_REF?: string;
@@ -28,7 +30,30 @@ export interface PreviewMeta {
 	commitSha: string;
 }
 
-export type CommentAction = { type: "create" } | { type: "update"; id: string };
+export interface PreviewComment {
+	id: number;
+	body: string;
+	user: { login: string };
+}
+
+export type GhRunner = (
+	args: string[],
+) => Promise<{ exitCode: number; stdout: string }>;
+
+export function findPreviewComment(
+	pages: { id: number; body: string; user: { login: string } }[][],
+	marker: string,
+	author: string,
+): number | null {
+	for (const page of pages) {
+		const match = page.find(
+			(comment) =>
+				comment.body.startsWith(marker) && comment.user.login === author,
+		);
+		if (match) return match.id;
+	}
+	return null;
+}
 
 function isPullRequest(env: DeployEnv): boolean {
 	return env.GITHUB_EVENT_NAME === "pull_request";
@@ -42,6 +67,9 @@ export function deployBranch(env: DeployEnv): string {
 		throw new Error(
 			"GITHUB_HEAD_REF is not set; refusing to deploy a pull request preview",
 		);
+	}
+	if (branch === "main") {
+		throw new Error("refusing to deploy a preview to production branch main");
 	}
 	return branch;
 }
@@ -68,7 +96,8 @@ export function recordedCommitSha(env: DeployEnv): string | undefined {
 }
 
 export function commentBody(meta: PreviewMeta): string {
-	return `${COMMENT_MARKER}\n**${SITE_LABEL} preview:** ${meta.previewUrl}\n\nDeployed from \`${meta.branch}\` at \`${meta.commitSha.slice(0, 7)}\`.`;
+	const branch = meta.branch.replaceAll("`", "'");
+	return `${COMMENT_MARKER}\n**${SITE_LABEL} preview:** ${meta.previewUrl}\n\nDeployed from \`${branch}\` at \`${meta.commitSha.slice(0, 7)}\`.`;
 }
 
 export function resolvePreviewComment(
@@ -90,47 +119,85 @@ export function resolvePreviewComment(
 	return { ok: true, inputs: { repo, pr, token } };
 }
 
-export function resolveCommentAction(
-	exitCode: number,
-	stdout: string,
-): CommentAction {
-	if (exitCode !== 0) {
-		throw new Error(
-			`failed to look up existing PR comments (exit ${exitCode})`,
-		);
+function isPreviewCommentPages(pages: unknown): pages is PreviewComment[][] {
+	if (!Array.isArray(pages)) return false;
+	for (const page of pages) {
+		if (!Array.isArray(page)) return false;
+		for (const comment of page) {
+			if (typeof comment !== "object" || comment === null) return false;
+			if (
+				!("id" in comment) ||
+				typeof comment.id !== "number" ||
+				!("body" in comment) ||
+				typeof comment.body !== "string" ||
+				!("user" in comment) ||
+				typeof comment.user !== "object" ||
+				comment.user === null ||
+				!("login" in comment.user) ||
+				typeof comment.user.login !== "string"
+			) {
+				return false;
+			}
+		}
 	}
-	const id = stdout.trim().split("\n")[0]?.trim();
-	return id ? { type: "update", id } : { type: "create" };
+	return true;
 }
 
-async function upsertPreviewComment(opts: {
+export async function upsertPreviewComment(opts: {
 	repo: string;
 	pr: string;
-	token: string;
 	body: string;
+	runner: GhRunner;
 }): Promise<void> {
-	const ghEnv = { ...process.env, GH_TOKEN: opts.token };
-	const existing =
-		await $`gh api --paginate ${`repos/${opts.repo}/issues/${opts.pr}/comments`} --jq ${`.[] | select(.body | startswith("${COMMENT_MARKER}")) | .id`}`
-			.env(ghEnv)
-			.nothrow()
-			.quiet();
-	const action = resolveCommentAction(
-		existing.exitCode,
-		existing.stdout.toString(),
-	);
-	if (action.type === "update") {
-		await $`gh api --method PATCH ${`repos/${opts.repo}/issues/comments/${action.id}`} -f ${`body=${opts.body}`}`
-			.env(ghEnv)
-			.quiet();
-		console.log("updated existing preview comment");
-		return;
+	const lookup = await opts.runner([
+		"api",
+		"--paginate",
+		"--slurp",
+		`repos/${opts.repo}/issues/${opts.pr}/comments`,
+	]);
+	if (lookup.exitCode !== 0) {
+		throw new Error(
+			`failed to look up existing PR comments (exit ${lookup.exitCode})`,
+		);
 	}
 
-	await $`gh pr comment ${opts.pr} --repo ${opts.repo} --body ${opts.body}`
-		.env(ghEnv)
-		.quiet();
-	console.log("created preview comment");
+	let response: unknown;
+	try {
+		response = JSON.parse(lookup.stdout);
+	} catch (error) {
+		throw new Error("failed to parse existing PR comments", { cause: error });
+	}
+	if (!isPreviewCommentPages(response)) {
+		throw new Error("GitHub returned invalid PR comments");
+	}
+
+	const commentId = findPreviewComment(
+		response,
+		COMMENT_MARKER,
+		PREVIEW_COMMENT_AUTHOR,
+	);
+	const args =
+		commentId === null
+			? ["pr", "comment", opts.pr, "--repo", opts.repo, "--body", opts.body]
+			: [
+					"api",
+					"--method",
+					"PATCH",
+					`repos/${opts.repo}/issues/comments/${commentId}`,
+					"-f",
+					`body=${opts.body}`,
+				];
+	const result = await opts.runner(args);
+	if (result.exitCode !== 0) {
+		throw new Error(
+			`failed to upsert preview comment (exit ${result.exitCode})`,
+		);
+	}
+	console.log(
+		commentId === null
+			? "created preview comment"
+			: "updated existing preview comment",
+	);
 }
 
 async function main(): Promise<void> {
@@ -143,7 +210,7 @@ async function main(): Promise<void> {
 
 	const branch = deployBranch(env);
 	console.log(`Deploying site/dist to Cloudflare Pages (branch: ${branch})...`);
-	const result = await $`bunx ${wranglerArgs(branch)}`.nothrow();
+	const result = await $`bunx ${wranglerArgs(branch)}`.nothrow().quiet();
 	const output = result.stdout.toString() + result.stderr.toString();
 	console.log(output);
 	if (result.exitCode !== 0) {
@@ -164,9 +231,16 @@ async function main(): Promise<void> {
 		throw new Error(
 			"PR_HEAD_SHA is not set; cannot identify the preview commit",
 		);
+	const ghEnv = { ...process.env, GH_TOKEN: comment.inputs.token };
+	const runner: GhRunner = async (args) => {
+		const result = await $`gh ${args}`.env(ghEnv).nothrow().quiet();
+		return { exitCode: result.exitCode, stdout: result.stdout.toString() };
+	};
 	await upsertPreviewComment({
-		...comment.inputs,
+		repo: comment.inputs.repo,
+		pr: comment.inputs.pr,
 		body: commentBody({ previewUrl, branch, commitSha }),
+		runner,
 	});
 }
 
