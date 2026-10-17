@@ -25,7 +25,7 @@
 		"wrangler": "4.128.0"
 	},
 	"devDependencies": {
-		"@rigelbuild/biome-config": "1.0.0",
+		"@rigelbuild/biome-config": "1.0.1",
 		"@rigelbuild/tsconfig": "1.0.0",
 		"@types/bun": "1.4.2",
 		"typescript": "6.0.3"
