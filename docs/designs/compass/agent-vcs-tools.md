@@ -200,15 +200,17 @@ differ only in case, the oldest wins, as write-once authorship does.
 Only the author updates a PR, with one exception (OQ-6 ruling): when a
 foreign PR in the caller's line has an ownership row with the caller's
 owner, the Server rebases that bookmark in its mirror, pushes it, restamps
-only its block, and tells the owning agent. The notice goes to that
-agent's home channel through the path `Comms.PostMessage` uses:
-`AppendMessage` stores it, then `publishMessagePosted` publishes
-`MessagePosted`, so a live agent gets it at once. `UndeliveredMessages`
-"always sweeps" the home channel, so an offline agent reads it on its next
-start, and a failed publish is left to "the delivery recovery sweep". The
-notice names the bookmark, the old and new head, and the PR. On a conflict
-the Server pushes nothing, marks the entry failed, and sends the same kind
-of notice asking the owning agent to resolve.
+only its block, and tells the owning agent. The notice is authored by the
+submitting agent in its DM with the owning agent: `Comms.OpenDM` resolves
+or creates it ("Same-owner ... are allowed"), and both agents are members.
+It is posted the way `Comms.PostMessage` posts: `AppendMessage` stores it,
+then `publishMessagePosted` publishes `MessagePosted`, so a live agent gets
+it at once. A DM channel is born `mandatory_subscription`, so
+`UndeliveredMessages` sweeps it for an offline agent, and a failed publish
+is left to "the delivery recovery sweep". The notice names the bookmark,
+the old and new head, and the PR. On a conflict the Server pushes nothing,
+marks the entry failed, and sends the same kind of notice asking the
+owning agent to resolve.
 Any other foreign write is refused, as is every write to an unrecorded PR
 the caller cannot adopt.
 
@@ -441,8 +443,9 @@ authorship refusal. `submitStack` resolves `issue_ref` and checks it with
   skipped with no provider call.
 - Only `ready_head_ref` leaves draft.
 - A same-owner foreign PR in the line is rebased, pushed, and restamped;
-  a live owning agent receives `MessagePosted` and an offline one finds the
-  notice in its home-channel sweep; a conflict pushes nothing and asks that
+  the notice, authored by the submitting agent in their DM, reaches a live
+  owning agent as `MessagePosted` and an offline one in its undelivered
+  sweep; a conflict pushes nothing and asks that
   agent to resolve; a different-owner foreign PR is refused.
 - A same-scope close of a PR another agent authored, and of a PR with no
   row, is refused with no provider call; the author's own close runs.
@@ -538,8 +541,11 @@ the refs it is given, with a lease on the old commit. `Rebase` uses
 caps refuse an apply that would cross them: a per-repo size and a total
 size across all mirrors, both flags, with the total below the volume size.
 The mirror directory must sit on a fixed-size volume, so disk use cannot
-grow the bill. The change that turns the mirror on in a deployment states
-that volume's size cap, the billing alert, and the spend-cap rows.
+grow the bill. Before any deployment sets `--vcs-mirror-dir`, the change
+that enables it must add an enforced cap at each billing layer (account,
+cluster, and volume, citing an existing cap where one covers it), a budget
+alert that pages Matt through the billing paging route, and a spend-cap row
+per layer with evidence that it enforces. Until then the mirror stays off.
 Red → green (temp repos): a bundle with missing commits refuses;
 a stale lease refuses; a conflicting rebase returns `conflict` and pushes
 nothing; an apply over either cap refuses.
