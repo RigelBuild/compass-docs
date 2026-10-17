@@ -5,7 +5,7 @@
 	},
 	"patterns": [
 		{
-			"source": "\\borion\\b(?!-ref-gate\\b)",
+			"source": "\\borion\\b(?!-ref-gate(?![\\w-]))",
 			"flags": "i"
 		},
 		{
