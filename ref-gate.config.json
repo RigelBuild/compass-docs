@@ -4,22 +4,41 @@
 		"ignoreCase": true
 	},
 	"patterns": [
-		{ "source": "\\borion\\b", "flags": "i" },
-		{ "source": "\\bsealed/[a-z]", "flags": "i" },
+		{
+			"source": "\\borion\\b(?!-ref-gate(?![\\w-]))",
+			"flags": "i"
+		},
+		{
+			"source": "\\bsealed/[a-z]",
+			"flags": "i"
+		},
 		{
 			"source": "\\bsealed\\s+[\\w.-]+(?:/[\\w.-]+)*\\.(?:ts|tsx|js|jsx|go|nix|md|json5?|ya?ml|toml|sh|py|rs|lock)\\b",
 			"flags": "i"
 		},
-		{ "source": "\\bsealed-(?:repo|monorepo|docs|private)\\b", "flags": "i" },
-		{ "source": "\\bsealed's\\b", "flags": "i" },
+		{
+			"source": "\\bsealed-(?:repo|monorepo|docs|private)\\b",
+			"flags": "i"
+		},
+		{
+			"source": "\\bsealed's\\b",
+			"flags": "i"
+		},
 		{
 			"source": "\\bsealed (repo|monorepo|design corpus|platform|convention|PR #)",
 			"flags": "i"
 		},
-		{ "source": "\\bSEA-\\d+\\b", "flags": "" }
+		{
+			"source": "\\bSEA-\\d+\\b",
+			"flags": ""
+		}
 	],
 	"ignore": [],
-	"carveOutPaths": ["ref-gate.config.json", "bun.lock"],
+	"carveOutPaths": [
+		"ref-gate.config.json",
+		"bun.lock",
+		"site/scripts/ref-gate-config.test.ts"
+	],
 	"carveOutPrefixes": [],
 	"allowlist": {},
 	"remediationDoc": "README.md"
