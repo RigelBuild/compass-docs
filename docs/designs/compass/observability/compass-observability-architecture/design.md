@@ -42,8 +42,8 @@ canonical framing is `docs/designs/infra/runtime/compass-elastic-session-runtime
 | | Plane A — in-product data surface | Plane B — OTLP ops export |
 | --- | --- | --- |
 | **Self-hosted (OSS core, this repo)** | In-app charts from the deployment's own bundled Postgres. Single-team/single-org scope. | Emission off by default; operator points `OTEL_EXPORTER_OTLP_ENDPOINT` at THEIR backend; bundled fan-in collector with `--otel-external` opt-out; dashboard JSON shipped in-repo. |
-| **Managed (private, commercially-licensed; compass.rigel.build) — per user/org** | The SAME in-app data surface, **tenant-scoped**: identical read API, scoped to the org. Each org's data is separated. Plane A is authoritative for usage/spend (see D5). | Per-tenant telemetry export (an operator/enterprise ask) is a named managed-plane deferral, not designed here; whole-service export is row 3. |
-| **Managed — Rigel over the whole service** | **Cross-tenant fleet analytics + billing** — built on the core's seams: analytics over the tenant-scoped rollup reads, billing over the tenant-scoped raw-event export (D1/D5). A managed-plane concern, named here and deferred. | The fan-in collector exports whole-service telemetry to Rigel's own Grafana — Rigel consumes Plane B "just like a user". Managed control-plane obs is a separate managed-plane concern, out of scope here. |
+| **Multi-tenant deployment — per org** | The SAME in-app data surface, **tenant-scoped**: identical read API, scoped to the org. Plane A is authoritative for usage/spend (see D5). | Per-tenant telemetry export is a managed-plane concern, out of scope here. |
+| **Whole-service operator** | Cross-tenant analytics and billing are managed-plane concerns, out of scope here; the core supplies the tenant-scoped rollup reads and the raw-event export (D1/D5). *(Redacted 2026-10-17: non-public details omitted.)* | The fan-in collector exports whole-service telemetry to the operator's own backend (D3). |
 
 Cross-tenant analytics, billing, and control-plane observability are
 managed-plane concerns: they are out of scope here, and are taken up when the
@@ -174,7 +174,7 @@ OSS core never stores:
   traces + metrics from agents/runners/server/UI. The only genuinely
   massive-scale-store class — and its scale-appropriate home already exists
   and is NOT built by Compass: the operator's own Grafana/LGTM backend
-  (self-host) and Rigel's Grafana Cloud (managed). The bundled fan-in
+  (self-host) or the managed operator's backend. The bundled fan-in
   collector ROUTES to it; Compass never builds or bundles a heavy TSDB/OLAP
   for this. The "bigger dep that supports massive scale" is a backend we
   POINT AT, not one we own.
@@ -186,33 +186,33 @@ OSS core never stores:
   rollup, not an event firehose: bounded by a single org's own activity even at
   managed scale, because each org's data is separated. It never sees cross-tenant
   firehose volume.
-- **Class 3 — cross-tenant managed analytics (whole managed service, for
-  Rigel).** PostHog-scale product analytics across ALL tenants is where a
-  ClickHouse-class OLAP genuinely belongs — a managed-plane concern, out of
-  scope here. Any big-scale analytics dep, if ever, is a managed-plane
-  adoption, not this repo's and not now.
+- **Class 3 — cross-tenant analytics (whole managed service).** Analytics
+  across all tenants, and the store behind it, are a managed-plane concern,
+  out of scope here. The core builds no OLAP store; it supplies the
+  tenant-scoped rollup reads and the raw-event export (D2, D5) that any such
+  store would consume. *(Redacted 2026-10-17: non-public details omitted.)*
 
 With the classes separated, the store question resolves cleanly — Decision D1.
 
 ### Physical placement — where each class lives, and how it graduates
 
 The classes above are logical; Matt asked the physical question directly — does
-the analytics data live in the product DB (Neon) or somewhere separate, and how
+the analytics data live in the product DB or somewhere separate, and how
 much goes to Postgres vs a big-data engine. The answer is that the product DB is
 **never** an analytics home, and the placement is fixed per class so the
 foundation scales without a re-instrumentation later:
 
 | Data class | Self-hosted core home | Managed home | Scale graduation |
 | --- | --- | --- | --- |
-| Product OLTP (accounts, orgs, sessions, settings) | Bundled Postgres | Neon (the product DB) | Route heavy reads to a Neon read replica/branch — never run analytical scans on the primary product branch. |
-| Class 2 — billing-grade compute-usage log + derived rollups (D5/D1) | Bundled Postgres, its own store behind the `UsageStore` seam | Its own Neon project/schema, deliberately separate from the product DB | Swap the Class-2 backend behind the D1 seam if per-org volume ever outgrows Postgres (headroom, not a foregone migration). |
-| Class 1 — ops firehose: metrics, logs, traces (Plane B) | Operator's own Grafana/LGTM backend | Rigel's Grafana Cloud (Mimir/Loki/Tempo) | Govern cardinality at the emission point (Adaptive Metrics/Logs/Traces) — never a SQL DB. |
-| Class 3 — cross-tenant analytics (whole managed service) | Not built in the core | PostHog's HogQL warehouse (managed plane; D7) now | Graduate to a purpose-built OLAP (ClickHouse/BigQuery) fed from Postgres by CDC (e.g. PeerDB, which supports a Postgres/Neon source directly) — a replication config, not a re-instrumentation. |
+| Product OLTP (accounts, orgs, sessions, settings) | Bundled Postgres | Managed-plane choice, out of scope here | Route heavy reads to a read replica — never run analytical scans on the primary product database. |
+| Class 2 — billing-grade compute-usage log + derived rollups (D5/D1) | Bundled Postgres, its own store behind the `UsageStore` seam | Managed-plane choice behind the same seam | Swap the Class-2 backend behind the D1 seam if per-org volume ever outgrows Postgres (headroom, not a foregone migration). |
+| Class 1 — ops firehose: metrics, logs, traces (Plane B) | Operator's own Grafana/LGTM backend | The managed operator's own OTLP backend | Govern cardinality at the emission point (Adaptive Metrics/Logs/Traces) — never a SQL DB. |
+| Class 3 — cross-tenant analytics (whole managed service) | Not built in the core | Managed-plane, out of scope here. *(Redacted 2026-10-17: non-public details omitted.)* | Out of scope; the core supplies only the D2 reads and D5 export. |
 
-Two placement rules fall out of the table. **The product Neon branch never
+Two placement rules fall out of the table. **The product database never
 carries analytical scan load** — OLAP-scale scans contending with product OLTP
-on one instance is the classic failure mode, and Neon branching makes the
-read-replica path cheap. And **"collect the data now so we are ready at scale"
+on one instance is the classic failure mode, and routing reads to a replica
+avoids it. And **"collect the data now so we are ready at scale"
 is already the design, not a new store**: capture the append-only compute-usage
 stream today with a stable schema (D5), and the graduation to a big-data engine
 is a CDC pipeline off that same stream — no re-instrumentation, no cost balloon
@@ -376,7 +376,7 @@ Also want full end to end tracing thru the system."** So:
 - **UI product analytics is PostHog, a separate plane from this OTel work
   (RESOLVED, OQ-B') — but the two planes are joinable, and the core builds that
   join seam (D7).** Matt ruled product analytics is PostHog embedded in the Solid
-  UI (managed → Rigel's PostHog; self-hosted → off-by-default or the deployer's
+  UI (the managed backend is a managed-plane choice; self-hosted → off-by-default or the deployer's
   own PostHog). Product analytics is a different signal from OTel — PostHog's
   frontend↔backend correlation is its own `X-POSTHOG-SESSION-ID` header, not the
   W3C `traceparent` this decision propagates — so the two are **parallel signals,
@@ -514,8 +514,8 @@ event source; T1-T3 depend on it. Its design record must land first.
 plane — cross-tenant analytics and aggregate observability, billing, any
 OLAP-backend adoption (Class 3), tenant scheduling, per-tenant telemetry export.
 UI product analytics is RESOLVED as its own plane (OQ-B': PostHog embedded in the
-UI, off-by-default self-hosted / the deployer's own PostHog, managed → Rigel's
-PostHog), added when the UI work lands, not an OTel task here; browser OTel/RUM is
+UI, off-by-default self-hosted / the deployer's own PostHog; the managed backend is
+a managed-plane choice), added when the UI work lands, not an OTel task here; browser OTel/RUM is
 a named follow-up. Managed-plane items are taken up when the managed service
 is built, on top of this record's seams. (The Tasks
 Out-of-scope list carries the same set.)
@@ -745,7 +745,7 @@ the UsageService RPCs. T2 is superseded — see its entry below.]
   aggregate obs, billing exporter, Class-3 OLAP adoption, tenant scheduling,
   per-tenant telemetry export. UI product analytics is RESOLVED (OQ-B'): PostHog
   embedded in the UI, off-by-default on self-hosted / the deployer's own PostHog,
-  managed → Rigel's PostHog — its own plane, added when the UI work lands, not an
+  the managed backend a managed-plane choice — its own plane, added when the UI work lands, not an
   OTel task here. Browser OTel/RUM is a named follow-up, not day-1.
 
 ## Open Questions
@@ -798,8 +798,8 @@ cross-record OQ1 reconciliation D6 depends on).
   compute-usage one as the billing-grade contract.
 - **OQ-B' [RESOLVED — Matt 2026-08-26; core-seam shape recommended] — UI product
   analytics + browser telemetry.** Matt ruled: **product analytics is PostHog,
-  embedded directly in the Solid UI.** Managed Compass is fully instrumented with
-  PostHog (Rigel's own PostHog backend); a self-hosted deploy either **disables it
+  embedded directly in the Solid UI.** The managed service's analytics backend is a
+  managed-plane choice, out of scope here; a self-hosted deploy either **disables it
   (default)** or **points it at the deployer's own PostHog**. He weighed and
   declined a vendor-agnostic collection layer ("I don't really think there is a
   standard for that and we'd likely lose some PostHog features"). The research
@@ -840,7 +840,7 @@ cross-record OQ1 reconciliation D6 depends on).
   - **Recommended core seam (for Matt to confirm):** the Solid UI embeds
     `posthog-js`, gated by an **off-by-default enable flag plus a configurable
     PostHog host** — unconfigured means no analytics leave the deployment, and a
-    self-hoster who wants it points the host at their own PostHog. Managed sets
-    both to Rigel's PostHog. PostHog-the-product is a managed-plane and
-    opt-in-self-host choice, never a hard core dependency; the core ships only the
+    self-hoster who wants it points the host at their own PostHog; any other
+    deployment configures the same two settings. PostHog-the-product is an
+    opt-in deployment choice, never a hard core dependency; the core ships only the
     embed and the enable/host seam.

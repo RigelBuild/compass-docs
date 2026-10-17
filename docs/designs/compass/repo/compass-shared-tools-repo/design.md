@@ -2,89 +2,77 @@
 
 ## Problem / Intent
 
-Compass and one private consumer repo each keep their own copy of the same repo
-tools, and the copies drift. A fix lands in one copy and not the other. Example:
-the private consumer's design-ledger gate exempted Trunk merge-queue branches
-(`trunk-merge/`) long before compass's copy did. Compass only found the gap when
-its CI began running the touch-coupling leg and queued PRs started failing.
+Compass and another consumer each keep their own copy of the same repository
+tools, and the copies drift. A fix can land in one copy and not the other.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
-Intent: move every tool both repos run into one new public repo, and have each
-consumer pin it, so each tool has one copy. This record folds in RIG-4184
+Intent: move tools used by both consumers into one new public repo, and have
+each consumer pin it so each tool has one copy. This record folds in RIG-4184
 ("share the design-ledger tools from one source"). The ledger tools are its
 first slice.
 
 ## Inventory
 
-Measured on 2026-10-04 with `git diff --no-index --stat` between the compass
-copy and the private consumer's copy (changes are compass relative to the
-private copy). "Private copy" says only whether a copy exists. This public
-record names no path in the private repo.
+An inventory compared Compass's public tooling with that of another consumer.
+Consumer-side findings are omitted here.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
-| Tool | Compass path | Private copy | Drift | Verdict |
-| --- | --- | --- | --- | --- |
-| Design-ledger gate | `tools/design-ledger-gate/` | Yes | Large: 6 files, +1,143 / −6,735. The private copy finds per-surface ledgers by glob, reports malformed rows, has citation, errata, and record-link legs, matches exempt branches by prefix only, and parses with micromark. Compass has one ledger and a fixed bucket list, and ties each exempt prefix to its bot author and same-repo PRs. | Move (T4) |
-| DL reconcile | `tools/dl-reconcile/` | Yes | Yes: 6 files, +1,088 / −501. Compass reads one ledger, cross-counts raw rows, refuses an empty frontier, and has `--check`. The private copy reads several ledgers and reports stale and duplicate claims. | Move (T5) |
-| DL claim | `tools/dl-claim/` | No | None to measure. Compass-only client; the request type hard-codes `repo: "compass"`. | Move (T5) |
-| SEA reference gate | `tools/sea-ref-gate/` | Yes | Yes: 8 files, +334 / −611. The private copy splits the core into its own module. | Move as `ref-gate` (T3) |
-| Private-name reference gate | A sibling of the SEA gate under `tools/` | No | None to measure. Same four exported functions as the SEA gate (`isCarveOut`, `lineHasToken`, `findViolations`, `runOnce`). | Becomes a `ref-gate` config (T3) |
-| Renovate preflight | `tools/renovate-preflight/` | Yes | Small: 6 files, +47 / −43 (comments, task and package config). | Move (T6) |
-| Bun moon task template | `.moon/tasks/tag-bun.yml` | Yes | Comments only. No task differs. | Stay local |
-| Root checks | `lint`, `format`, `markdownlint` tasks in the root `moon.yml` | Different tool | Not a copy. The private consumer runs a separate tool that runs its checks outside the moon cache and gates baked linter versions. | Stay local |
-| Agent extensions | None | Yes | None to measure. Personal agent config, not repo tooling. | Stay private |
-| Renovate config | `tools/renovate/config.json5` | Yes | Different files that share ideas (git-refs cooldown, catalog handling). | Later record |
-| Renovate upgrade scripts | `tools/renovate/refresh-go-overlay[.core].ts`, `refresh-devenv-nixpkgs[.core].ts`, `refresh-toolchain-hashes.ts` | Yes, same names | Not measured. Each bot config's `allowedCommands` regex names these paths, so moving them changes that config too. | Later record |
+| Compass tool or config | Compass-side scope | Decision |
+| --- | --- | --- |
+| `tools/design-ledger-gate/` | Design-ledger checks | Move (T4) |
+| `tools/dl-reconcile/` | Design-ledger reconciliation | Move (T5) |
+| `tools/dl-claim/` | Design-ledger claims | Move (T5) |
+| `tools/sea-ref-gate/` and a second reference gate under `tools/` | Reference checks | Move as `ref-gate` (T3) |
+| `tools/renovate-preflight/` | Renovate preflight | Move (T6) |
+| `.moon/tasks/tag-bun.yml` | Bun moon task template | Stay local |
+| Root checks in `moon.yml` | Lint, format, and markdown checks | Stay local |
+| `tools/renovate/config.json5` and `tools/renovate/refresh-*.ts` | Renovate configuration and upgrade scripts | Later record |
 
 ## Approach
 
 ### One public repo, one package per tool
 
 Use the public repo `RigelBuild/meissa` (see Decisions). The tooling lane
-creates it and builds its Nix side: a pinned nixpkgs, the shared rumdl and
-biome, and a daily relock. This record adds the TS tools to it. They form a bun
-workspace with one package per tool
+creates its Nix side: pinned nixpkgs, shared rumdl and biome, and a daily relock.
+This record adds the TS tools in a bun workspace, with one package per tool
 under `packages/<tool>/`, published as `@rigelbuild/<tool>` with a bin of the
-same name. Each consumer pins exact versions and deletes its own copy in
-the same PR. There is no shim and no re-export.
+same name. Consumers pin exact versions and remove their local copies in the
+same PR. No shim or re-export remains.
 
-The port base is the compass copy. It is already public, so starting from it
-moves nothing private. Features only the private copy has (per-surface ledgers,
-the citation, errata, and record-link legs, malformed-row reporting) are written
-again as new public code on top of it (OQ3: yes).
+The port base is Compass's public copy. Additional shared behavior is written
+as new public code and tested with synthetic fixtures.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 ### Config, not literals
 
-The two repos differ in real ways. Compass has one ledger and a fixed bucket
-list. The private consumer has several per-surface ledgers. Each repo claims DL
-IDs from its own counter partition. So no consumer value is a literal in shared
-code. Each consumer keeps one config file, `docs/designs/ledger.config.json`,
-which the gate, claim, and reconcile tools all read. The reference gate reads
-its own config file.
+Shared tools accept per-consumer configuration rather than hardcoding ledger,
+reference-gate, or counter values.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 The CLIs keep their environment inputs (`REPO`, `PR_NUMBER`, `GH_TOKEN`,
 `DL_CLAIM_TOKEN`, `RENOVATE_TOKEN`). Every tool also reads `GATE_ROOT`, default
 the git toplevel, as the consumer root. A tool under `node_modules` cannot find
-the ledger relative to its own file, as `dl-reconcile` does today
-(`resolve(import.meta.dir, …)`). The counter URL comes only from
+the ledger relative to its own file. The counter URL comes only from
 `counter.url`; no env var overrides it.
 
 Exit codes are normalized to 0 pass, 1 violations, 2 usage or internal error.
 This is a change, not a carry-over: `dl-claim` and `dl-reconcile` exit 1 for
 every error today. CI only checks for non-zero, so no workflow changes.
 
-CI wiring changes more than the command. `dl-reconcile.yml` and the Renovate
-preflight step in `renovate.yml` run the tool from the checkout with no
-`bun install`, and both jobs hold a secret. A package bin needs an install
-first. Per OQ4, those jobs run the full `bun install --frozen-lockfile`, so
-every install is checked against `bun.lock`.
+CI jobs that invoke a package bin need to install it first. Those jobs use a
+frozen lockfile so each install is checked against the selected dependency set.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 ### Pinning (OQ1: npm)
 
 | Option | How a consumer pins | For | Against |
 | --- | --- | --- | --- |
-| npm package (chosen for TS tools) | Exact version in the bun catalog; `bun.lock` keeps the integrity hash | Both repos already take tools as bun dependencies. Compass's Renovate catalog manager already reads npm versions. One package per tool. | Needs a publish lane in the shared repo and a one-time bootstrap publish per package |
-| bun git dependency | `github:RigelBuild/meissa#<sha>` in the root `package.json` | No registry and no publish lane | One package for the whole repo (bun installs a git repo root, not a subdirectory). Compass's catalog manager reads only npm versions. |
-| Rev-pin JSON | A `{repo, ref, rev}` file plus a fetch step before each run. The private consumer already pins compass this way. | Precedent exists, and compass's Renovate config already bumps git revs with a regex manager | Each consumer writes its own fetch step. The tools' own npm dependencies need a separate install. No typed imports. Local runs need the fetch too. |
-| Nix flake input | Flake input, locked by the consumer's lock file (`devenv.lock` in compass) | Content-addressed and nix-native | Each bun tool would need a nix package build, and moon and `tsc` cannot typecheck against a store path. |
+| npm package (chosen for TS tools) | Exact version in the bun catalog; `bun.lock` keeps the integrity hash | Compass already takes tools as bun dependencies. One package per tool. | Needs a publish lane in the shared repo and a one-time bootstrap publish per package |
+| bun git dependency | `github:RigelBuild/meissa#<sha>` in the root `package.json` | No registry and no publish lane | One package for the whole repo (bun installs a git repo root, not a subdirectory). |
+| Rev-pin JSON | A `{repo, ref, rev}` file plus a fetch step before each run | No separate registry | Each consumer writes its own fetch step. The tools' npm dependencies need a separate install. No typed imports. Local runs need the fetch too. |
+| Nix flake input | Flake input, locked by the consumer's lock file | Content-addressed and nix-native | Each bun tool would need a nix package build, and moon and `tsc` cannot typecheck against a store path. |
+
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 TS tools ship as npm packages, so a tool bump is an ordinary catalog PR with
 release notes. Per OQ5, first-party pins skip the release-age cooldown in
@@ -99,48 +87,41 @@ These steps have no IaC path, so they go to Matt as one human-action issue.
 
 ### Nix tooling
 
-Matt's OQ1 ruling first added Nix: meissa would also export the Nix code both
-repos carry. T10 measured it. Only one file is shared, the vendored bun, node
-and moon builder, with 6 lines of drift. Matt then ruled (RIG-4548) to
-reconcile that file by hand in each repo instead of shipping it from meissa.
-So this record moves no Nix code. Meissa's own Nix exports (rumdl, biome, the
-rumdl base policy) are the tooling lane's work.
+The related Nix-tooling record covers the shared builder question. This record
+moves no Nix code. The shared repo's Nix exports remain separate tooling work.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 ### What may move (the public boundary)
 
 A tool qualifies only if all three conditions hold:
 
-1. It runs in compass today, or it is a generic check that any public repo could
+1. It runs in Compass today, or it is a generic check that any public repo could
    run unchanged.
-2. It holds no consumer literal: no private repo name, path, surface name,
-   counter partition, hostname, or record citation. Those come from consumer
-   config.
+2. It holds no consumer-specific literal; those values come from configuration.
 3. Its tests use synthetic fixtures only.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 Enforcement:
 
-- The shared repo runs `ref-gate` on itself as a required check. It fails closed
-  on the private repo's name and on retired SEA issue ids, the same as compass.
-  The name appears only in the gate's own config file, which is carved out, as
-  compass carves out its gate source today.
-- Every port PR starts from public code. A private-only feature is written again
-  and reviewed against the three conditions. It is never copied file to file.
+- The shared repo runs `ref-gate` on itself as a required check. Consumer-specific
+  patterns live only in the gate's carved-out config.
+- Port PRs start from public code. New shared behavior is implemented independently
+  against public requirements and tested with synthetic fixtures.
 - Matt is CODEOWNER and approves every PR, as in compass.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 ### Drift prevention after migration
 
-No copy is left to drift. A consumer cannot patch a tool locally without
-adding a copy back, and the Global Constraints forbid that. Renovate bumps both
-pins, so skew between the consumers is a version number, not a fork. Because
-first-party pins skip the cooldown (OQ5), the skew lasts from release to the
-next Renovate run plus Matt's review of each bump PR. A fix lands as a
-shared-repo PR and reaches each consumer by pin bump.
+No local copy is left to drift. Consumers pin exact package versions, and fixes
+reach each consumer through its package update. Any skew is a version difference,
+not a fork.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 ### Alternatives considered
 
-- Keep the tools in compass and have the private consumer pin compass: rejected
-  by the ask. It ties the consumer to compass's `main` and mixes product
-  releases with tool releases.
+- Keep the tools in compass and have a consumer pin compass: rejected by the ask.
+  It ties the consumer to compass's `main` and mixes product releases with tool
+  releases.
 - Keep vendored copies and add a CI check that they match the pin: rejected. It
   keeps two copies to edit, and the check only reports drift after it happens.
 - Git submodule: rejected. jj, the house VCS, does not manage submodules.
@@ -206,9 +187,9 @@ Interfaces: each `packages/<tool>/package.json` has
 
 ### T3 — `ref-gate`
 
-Lands in: the shared repo. Merge compass's `sea-ref-gate` and private-name gate
-into one config-driven gate. Turn it on as the shared repo's own required check
-in the same PR.
+Lands in: the shared repo. Merge Compass's `sea-ref-gate` and a second
+reference gate into one config-driven gate. Turn it on as the shared repo's own
+required check in the same PR.
 
 Interfaces:
 
@@ -315,11 +296,9 @@ Add two code-free moon projects:
   `ALWAYS_RUN_ON_PR` by moon project id, and it injects nothing, with no error,
   when the project is missing. So keep the id `design-ledger-gate`, or update
   `ALWAYS_RUN_ON_PR` and its test in the same PR.
-- `tools/ref-gates/`: `moon.yml` plus the configs `sea.json` and
-  `private-name.json`. Each config carves out `tools/ref-gates/`. The
-  private-name token lives only in that carved-out config, as it lives today
-  only in the carved-out source of the current gate. Its `ignore` list keeps
-  the current gate's directory name, because existing records cite that path.
+- `tools/ref-gates/`: `moon.yml` plus public reference-gate configs. Each config
+  carves out `tools/ref-gates/`. The configs use allowlists only for public
+  references and keep the gate's own directory name in their ignore lists.
 
 Point the moon tasks, `.github/workflows/dl-reconcile.yml`, the Renovate
 preflight step, `.moon/workspace.yml`, `docs/designs/CONTRIBUTING.md` §7, and
@@ -334,7 +313,7 @@ catalog part of the bunfig list. Add a rule exempting the
 Confirm every `RigelBuild/*` git-refs rule already sets
 `minimumReleaseAge: null`. Delete
 `tools/design-ledger-gate/`, `tools/dl-claim/`, `tools/dl-reconcile/`,
-`tools/sea-ref-gate/`, the private-name gate's directory, and
+`tools/sea-ref-gate/`, the unused local reference gate, and
 `tools/renovate-preflight/`.
 
 Acceptance:
@@ -361,36 +340,32 @@ Record each result in the PR body.
 
 Interfaces: consumes the T3–T6 releases; produces the config files above.
 
-### T8 — Private consumer cutover
+### T8 — Another consumer cutover
 
-Lands in: the private consumer. The same shape as T7: its own
-`ledger.config.json` (one entry per surface ledger, all legs on, its own
-partition), its own reference-gate config, CI pointed at the bins, and its
-local copies deleted. The same seeded-corpus acceptance as T7.
+Lands in: another consumer. It adopts shared packages, supplies its own
+configuration, points CI at the package bins, and removes local copies.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 Interfaces: consumes the T3–T6 releases.
 
 ### T9 — Compass turns on the extra ledger legs
 
-Lands in: compass. Run the citation, errata, and record-link legs over the
+Lands in: Compass. Run the citation, errata, and record-link legs over the
 corpus, fix every finding, and turn the legs on in the same PR.
 
 Interfaces: consumes T4; edits `legs` in `docs/designs/ledger.config.json`.
 
 ### T10 — Shared Nix tooling inventory
 
-Its record is `docs/designs/repo/compass-shared-nix-tooling/design.md`. It
-measured the Nix both repos carry. Matt ruled to reconcile the one shared
-builder by hand (RIG-4548), so no Nix moves to meissa. The task is done when
-that record merges.
+The related Nix-tooling record addresses the builder question. This record's
+T10 closes when that record merges.
+> Redacted 2026-10-17: non-public implementation details omitted.
 
 ### Out of scope
 
-Later records: a shared Renovate preset and moving the Renovate upgrade
-scripts. The
-moon task template and the root checks stay local (see Inventory). Wiring the
-touch-coupling leg into compass CI is separate work. The DL counter service
-(`dl.rigel.build`) does not move.
+Later records cover the shared Renovate preset and upgrade scripts. The moon task
+template and root checks stay local. Wiring the touch-coupling leg into Compass
+CI is separate work. The public DL counter service (`dl.rigel.build`) does not move.
 
 ## Tasks
 
@@ -401,18 +376,20 @@ touch-coupling leg into compass CI is separate work. The DL counter service
 - [ ] T5 — Port `dl-claim` and `dl-reconcile` onto `LedgerConfig`.
 - [ ] T6 — Move `renovate-preflight`.
 - [ ] T7 — Cut compass over and delete its six local tools.
-- [ ] T8 — Cut the private consumer over and delete its local copies.
+- [ ] T8 — Cut another consumer over and delete its local copies.
+  > Redacted 2026-10-17: non-public implementation details omitted.
 - [ ] T9 — Turn on compass's extra ledger legs.
 - [ ] T10 — Write the shared Nix tooling inventory record.
 
 ## Decisions (Matt, 2026-10-04 RIG-4440; repo name and Nix 2026-10-05)
 
-- **OQ1 — pin mechanism:** npm packages for the TS tools. Matt added Nix;
-  T10 measured it and RIG-4548 ruled reconcile by hand, so no Nix moves.
+- **OQ1 — pin mechanism:** npm packages for the TS tools. The separate Nix
+  tooling record resolves the builder question; no Nix moves here.
 - **OQ2 — names:** npm scope `@rigelbuild/<tool>`. The repo is
   `RigelBuild/meissa`, the public shared infrastructure repo (RIG-4469).
-- **OQ3 — publish the private-only ledger-gate features:** yes, written again
-  as public code with synthetic fixtures.
+- **OQ3 — additional ledger-gate behavior:** implemented as new public code with
+  synthetic fixtures.
+  > Redacted 2026-10-17: non-public implementation details omitted.
 - **OQ4 — install in secret-holding jobs:** a full
   `bun install --frozen-lockfile`.
 - **OQ5 — cooldown:** every first-party pin skips the release-age cooldown, in

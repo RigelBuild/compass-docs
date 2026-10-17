@@ -389,7 +389,7 @@ demand via cloud-hypervisor hotplug rather than reserving peak RAM (D5).
   boot a session from a **box-independent** durable volume (network-attached or
   rehydrated from object storage, not local-disk-only) and to support
   suspend-to-durable. The scheduling, idle detection, and durable-storage
-  mechanism are the control plane's (RIG-2485); this backend owns only the
+  mechanism are the control plane's (managed-plane); this backend owns only the
   boot-from-anywhere + suspend contract.
 - **Rootless is hard.** No daemon, no root, no rootful fallback
   (`podman.go:22-24`). The VMM, virtiofsd, and every backend process run as
@@ -774,12 +774,12 @@ each is kept so the executor sees *why*, not just *what*.
    at deploy; V6's quota preflight *verifies* it is active (a read-only,
    rootless-safe check) and fails startup if absent. V6 ships quota
    *verification*, not assignment.
-8. **D8 — deployment topology: the Runner is co-located one-per-box; fleet
-   orchestration is a separate control plane. This is settled — do not
-   reopen.** The Runner runs *on the same physical box* as the microVMs it
-   manages (a node-agent, kubelet-style), managing only that box's local VMs.
-   A separate managed **control plane** provisions boxes on the hyperscaler
-   and schedules sessions onto per-box Runners. This is decided for three
+8. **D8 — deployment topology: the Runner is co-located one-per-box; box
+   provisioning and session placement sit outside the Runner. This is settled
+   — do not reopen.** The Runner runs *on the same physical box* as the
+   microVMs it manages (a node-agent, kubelet-style), managing only that box's
+   local VMs. Whatever provisions boxes and places sessions is not the Runner,
+   and this record does not design it. Co-location is decided for three
    reasons, each of which would otherwise resurface as the same question:
    - **vsock is host-local by construction.** The agent↔Runner transport
      (Approach (b)) is virtio-vsock, which only connects a guest to the VMM on
@@ -805,49 +805,49 @@ each is kept so the executor sees *why*, not just *what*.
      co-location already makes local. The transport-consolidation
      record stands.
 
-   **Out of scope for this record (own design when the managed service is
-   built):** the control plane's box provisioning + session scheduling, the
-   Runner→Server telemetry fan-in, and any message-bus adoption (NATS/JetStream
-   is a candidate for that *trusted* control-plane tier — Runner→Server fan-in,
-   durable session-log, inter-Runner scheduling — but is a **bad** fit for the
-   untrusted agent↔Runner hop and is not adopted here). This record is scoped
-   to the per-box microVM backend only. The control plane is tracked as
-   **RIG-2485** (Backlog), to be designed when the managed service is built.
-9. **D9 — sessions are not sticky to a box beyond the warm path; a woken
-   session reschedules onto any available Runner.** D8 co-locates the Runner
-   with the VMs it manages, which raises a hyperscaler idle-scaledown wrinkle:
-   if a box is deprovisioned when idle, its co-located Runner disappears with
-   it, so a live-but-idle session cannot be pinned to that box. The resolution
-   is that it is **not** pinned. Session stickiness is warm-path only: a
-   *running* session is reachable through its box's local vsock, but an idle
-   session is scaled down by **suspending it to its durable volume**
+   **Out of scope for this record:** box provisioning, session placement,
+   and the Runner→Server telemetry fan-in. These are managed-plane concerns,
+   out of scope here. Any message bus is a **bad** fit for the untrusted
+   agent↔Runner hop and is not adopted here. This record is scoped to the
+   per-box microVM backend only, the capability the self-hosted core runs.
+   A single-box self-host deployment has one Runner and needs none of the
+   out-of-scope pieces. *(Redacted 2026-10-17: non-public details omitted.)*
+9. **D9 — sessions are not sticky to a box beyond the warm path; a resumed
+   session may land on any available Runner.** D8 co-locates the Runner
+   with the VMs it manages, so a session's Runner is tied to its box. A
+   suspended session must therefore not depend on returning to its box.
+   Session stickiness is warm-path only: a
+   *running* session is reachable through its box's local vsock, and a
+   session the lifecycle suspends (not one it closes) is **suspended to its durable volume**
    (`session_id` + volume, the state the session lifecycle already treats as
    durable — the Runner holds no durable session state, only the ephemeral
-   `container→session_id` binding it reconstructs on provision, D8), and a
-   later request **wakes it on any available Runner** via the D5
+   `container→session_id` binding it reconstructs on provision, D8). A
+   later request **resumes it on any available Runner** via the D5
    suspend/serialize → resume-on-new-box machinery — the same mechanism D5
-   uses for resize-relocation, triggered by idle-scaledown / box-drain instead
-   of resize-needs-headroom. Co-location makes this *simpler*, not harder:
-   because the agent only ever talks to its **local** Runner (D8), a woken
+   uses for resize-relocation. Co-location makes this
+   *simpler*, not harder:
+   because the agent only ever talks to its **local** Runner (D8), a resumed
    session that lands on a new box simply gets the new local Runner beside it,
    and the attribution boundary is preserved wherever it lands — no
-   sticky affinity, no reprovision-the-original-box requirement. The one
+   sticky affinity and no return to the original box. A single-box
+   self-host deployment never relocates a session, so it pays nothing
+   extra here. The one
    constraint this places on **this** record's backend: the microVM backend
    must boot a session from a **box-independent durable volume** (network-
    attached or rehydrated from object storage — not local-disk-only) and
-   support suspend-to-durable, so a woken session can land anywhere. These two
-   obligations carry **no new V-task** here — they are exercised by the
+   support suspend-to-durable, so a resumed session can land anywhere. These
+   two obligations carry **no new V-task** here — they are exercised by the
    parent's P2 volume-lifecycle work and the D5→C3 suspend/resume machinery
    once it lands; V6's isolation suite verifies the backend boots from the
-   box-independent volume path it is handed. **Out of scope (RIG-2485):** the
-   scheduling that picks a Runner, idle detection + box drain/deprovision,
-   on-demand reprovision on wake, any warm-affinity optimization, and the
-   durable-storage mechanism (network-attached vs object-store) — which **MUST**
+   box-independent volume path it is handed. **Out of scope (managed-plane):**
+   when to suspend a session and how a Runner is chosen. The durable-storage
+   mechanism, whichever form it takes, **MUST**
    carry the same per-tenant isolation and at-rest protection the live volume
    gets from V6's mount-ns sandbox, so suspended session state is never
-   cross-tenant readable. This decision fixes the *direction* (non-sticky,
-   reschedule-on-wake) and the backend contract that enables it; the fleet
-   mechanism is the control plane's.
+   cross-tenant readable. This decision fixes the core contract (non-sticky
+   sessions, resume on any Runner) and the backend obligations that enable
+   it. *(Redacted 2026-10-17: non-public details omitted.)*
+   Placement mechanics are not part of the core.
 
 ### Deferred (non-load-bearing, resolved in implementation)
 
