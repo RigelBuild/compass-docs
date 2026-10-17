@@ -5,7 +5,7 @@
 	},
 	"patterns": [
 		{
-			"source": "\\borion\\b",
+			"source": "\\borion\\b(?!-ref-gate\\b)",
 			"flags": "i"
 		},
 		{
@@ -36,12 +36,6 @@
 	"ignore": [],
 	"carveOutPaths": ["ref-gate.config.json", "bun.lock"],
 	"carveOutPrefixes": [],
-	"allowlist": {
-		"docs/designs/compass/agent/portable-operating-guidance/design.md": "Names the tools/orion-ref-gate gate in RigelBuild/compass, not the private repo",
-		"docs/designs/compass/infra/ci/compass-ci-job-decomposition/design.md": "Names the tools/orion-ref-gate gate in RigelBuild/compass, not the private repo",
-		"docs/designs/compass/infra/runtime/compass-guest-image-artifact/design.md": "Names the tools/orion-ref-gate gate in RigelBuild/compass, not the private repo",
-		"docs/designs/compass/repo/compass-design-docs-reorg/design.md": "Names the tools/orion-ref-gate gate in RigelBuild/compass, not the private repo",
-		"docs/designs/compass/server/compass-gateway-oauth-enrollment/design.md": "Names the tools/orion-ref-gate gate in RigelBuild/compass, not the private repo"
-	},
+	"allowlist": {},
 	"remediationDoc": "README.md"
 }

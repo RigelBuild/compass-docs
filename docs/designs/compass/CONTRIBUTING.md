@@ -1,8 +1,7 @@
 # Authoring design records in Compass
 
-> New Compass records are authored here, in `RigelBuild/docs`. Claim decision
-> ids with this repository's `bun run claim` (see the root README). The tool
-> paths below describe the older in-repo flow in `RigelBuild/compass`.
+> New Compass records are authored here, in `RigelBuild/docs`. §6 names the
+> gate's older in-repo tool path; this repository runs it as `bun run gate`.
 
 Compass is a **public** repository. Design records under `docs/designs/` are
 published verbatim to the engineering-docs site, so a record must carry no dead
@@ -117,7 +116,7 @@ outgrows flat scanning; until then records sit directly under their bucket.
 above) and every `.md` beneath one, at any depth, supporting files included: a
 record `Status:` header, when present, must have valid grammar, and a PR that
 touches a governed record must either add or change a decision file
-(`docs/designs/decisions/<area>/DL-NNN.md`) or declare a `Ledger-impact:` line
+(`docs/designs/compass/decisions/<area>/DL-NNN.md`) or declare a `Ledger-impact:` line
 in its description. Decision files stay scoped to **product decisions**; the
 gate governing a record is independent of whether that record has a decision
 file. File layout and keys are in [`decisions/README.md`](decisions/README.md).
@@ -137,16 +136,13 @@ a one-line correction of a record's stale self-described location.
 ## 7. Claim design-ledger IDs
 
 New decision files MUST get IDs from the shared counter, not from a guessed
-next number. Concurrent PRs can otherwise claim the same ID. The reconcile
-workflow marks claimed IDs as landed after merge. Set `DL_CLAIM_TOKEN` before
-running:
+next number. Concurrent PRs can otherwise claim the same ID. From the root of
+this repository:
 
 ```sh
-bun tools/dl-claim --ref RIG-1234 --lane feature/design-record
+bun run claim --surface designs --ref RIG-1234 --lane feature/design-record
 ```
 
-Use `--count N` to claim more than one ID. Name each new decision file after its
-printed ID, `docs/designs/decisions/<area>/DL-NNN.md`, in the same PR as the
-record.
-
-Failure handling, the token, and rotation are in `tools/dl-claim/README.md`.
+Name each new decision file after its printed ID,
+`docs/designs/compass/decisions/<area>/DL-NNN.md`, in the same PR as the
+record. The root README covers failed claims.
