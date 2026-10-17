@@ -45,13 +45,12 @@ of DL-442 (T9).
    - (c) Keep the agent push with the narrowed token now; move it later.
 
    **Recommendation: (a).** The write credential leaves the agent UID, and
-   the Server holds the objects it needs for OQ-6. Limits: a bundle must fit
-   one relay message (`runnerMaxReadBytes` in
-   `go/internal/runnerhub/handler.go` is `agentmsg.MaxBytes + 1<<20`, 17 MiB),
-   so a larger bundle is refused with that reason. Mirrors are usage-billed
-   storage and need a per-repo size cap with a row in the spend-cap table.
-   The Server rebase needs a VCS binary (T10). Fetch through the Server
-   mirror is [future direction](#future-direction).
+   the Server holds the objects it needs for OQ-6. Limits: the first hop
+   caps a message at `maxAgentMessageBytes = agentmsg.MaxBytes` (16 MiB,
+   `go/internal/runner/gateway/gateway.go`), so the tool refuses a bundle
+   over 15 MiB and names the limit. Mirrors are disk on the Server and need
+   caps (T10). The Server rebase needs `git` (T10). Fetch through the
+   Server mirror is [future direction](#future-direction).
 2. **OQ-2 (load-bearing) — what RIG-1882 becomes.** The push guard draft
    (RigelBuild/docs PR #13, DL-507..DL-510, not merged) blocks protected
    pushes, merges, and writes outside an owner allowlist.
@@ -198,10 +197,14 @@ differ only in case, the oldest wins, as write-once authorship does.
 Only the author updates a PR, with one exception (OQ-6 ruling): when a
 foreign PR in the caller's line has an ownership row with the caller's
 owner, the Server rebases that bookmark in its mirror, pushes it, restamps
-only its block, and posts a message to the owning agent naming the new
-head. On a conflict it pushes nothing, marks the entry failed, and asks the
-owning agent to resolve. Any other foreign write is refused, as is every
-write to an unrecorded PR the caller cannot adopt.
+only its block, and tells the owning agent. The notice is a message
+appended with `AppendMessage` (`go/internal/store/messages.go`) to that
+agent's home channel, which `UndeliveredMessages` "always sweeps", so an
+offline agent reads it on its next start. It names the bookmark, the old
+and new head, and the PR. On a conflict the Server pushes nothing, marks
+the entry failed, and sends the same kind of message asking the owning
+agent to resolve. Any other foreign write is refused, as is every write to
+an unrecorded PR the caller cannot adopt.
 
 `vcs_retire` closes through `transition_pull_request_state`.
 `transitionPullRequestState` goes from scope check to forge call with no
@@ -216,6 +219,8 @@ pr, err := rf.author.TransitionPullRequestState(ctx, req.GetRepo(), req.GetPrNum
 T5 makes close fail closed: it runs only when an ownership row names the
 caller. After the OQ-5 cutover every open PR was created by the tools, so a
 PR with no row is a human's or a foreign App's, and refusing it is correct.
+The cutover closes the old jj-vine PRs before T9, with the token and
+`gh pr close` the agents hold today (T8).
 
 **D3 — issue and text.** Each PR names its own issue: #2334
 ("Refs RIG-5511") stacks on #2333 (RIG-5510). `vcs_submit` takes a
@@ -253,10 +258,12 @@ authored its PR.
 Before push the tool refuses conflicts, merges, empty descriptions, two
 bookmarks on one commit, unpublished commits above the tip, and a fork:
 `(descendants(<own>) & bookmarks()) ~ ::<tip>` is not empty. It then runs
-`git hook run --ignore-missing pre-push` in the colocated repo root, so the
-repo's own hook runner decides what runs; OQ-9 bounds the time.
-`jj git push` runs no git hooks (jj 0.45.1, checked), so the tool calls the
-hook itself.
+the repo's own pre-push hook with the inputs a real push gives it:
+`git hook run --ignore-missing --to-stdin=<file> pre-push -- origin <url>`,
+where the file holds one `<local ref> <local sha> <remote ref> <remote sha>`
+line per own bookmark. The repo's hook runner decides what runs; OQ-9
+bounds the time. `jj git push` runs no git hooks (jj 0.45.1, checked), and
+under OQ-8(a) the agent does not push at all, so the tool calls the hook.
 
 Under OQ-8(a), `vcs_submit` runs `git bundle create` for
 `<base>..<own bookmarks>` and sends it with `submit_stack`. The Server
@@ -474,9 +481,11 @@ refuses trunk and a bundle over the relay limit. `vcs_retire` calls
 with no `<name>@origin` returns success, so a retry is safe.
 `packages/compass-agent/src/cli.ts` adds the tools to `nativeTools`.
 Red → green: each D4 refusal and a missing issue fail before the broker
-call; a hook failure refuses; a hook that runs past the OQ-9 limit is
-stopped and reported; the bundle names every own bookmark; `vcs_retire`
-changes no local state when `retire_head` fails.
+call; a hook failure refuses; a test hook receives `origin`, the URL, and
+one stdin line per own bookmark; a hook that runs past the OQ-9 limit is
+stopped and reported; the bundle names every own bookmark; a 15 MiB + 1
+bundle refuses with no broker call; `vcs_retire` changes no local state
+when `retire_head` fails.
 
 ### T8 — prompt, skill, cutover, and DL-558
 
@@ -486,8 +495,10 @@ tools and drop `jj-vine submit` and `jj-hp`. Red → green:
 The Setup agent's prompt installs a basic pre-push hook (format and lint)
 in a repo that has none. Cutover (OQ-5): for each open jj-vine PR, the
 owning agent resubmits its line through `vcs_submit` with new bookmark
-names, the new body links the old PR, and the old PR is closed with a link
-to the new one.
+names; the new body links the old PR. The agent then closes the old PR
+with `gh pr close --comment <new PR URL>`, under the write token it holds
+until T9. `vcs_retire` stays author-only. The cutover is done when no open
+PR carries a jj-vine stack block.
 
 ### T9 — remove jj-vine and narrow the token
 
@@ -511,13 +522,16 @@ type Mirror interface {
 }
 ```
 
-A per-repo bare git repo on Server storage with a per-repo size cap,
-fetched from the forge before each apply and pushed with the App token.
-`Push` pushes only the refs it is given, with a lease on the old commit.
-`Rebase` uses `git replay`. The Server image gains `git`. The spend-cap
-table gains a mirror storage row. Red → green (temp repos): a bundle with
-missing commits refuses; a stale lease refuses; a conflicting rebase
-returns `conflict` and pushes nothing; a repo over its cap refuses.
+A per-repo bare git repo under the Server's `--state-dir`, fetched from the
+forge before each apply and pushed with the App token. `Push` pushes only
+the refs it is given, with a lease on the old commit. `Rebase` uses
+`git replay`. The Server image gains `git`. Two enforced caps refuse an
+apply that would cross them: a per-repo size and a total size across all
+mirrors, both Server flags. A deployment whose disk is usage-billed adds its
+own storage cap, a billing alert, and spend-cap rows before it turns the
+mirror on. Red → green (temp repos): a bundle with missing commits refuses;
+a stale lease refuses; a conflicting rebase returns `conflict` and pushes
+nothing; an apply over either cap refuses.
 
 ## Tasks
 
