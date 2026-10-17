@@ -7,81 +7,101 @@ Tracker: RIG-5558
 > header). Unless a path says otherwise, every path is in
 > [RigelBuild/compass](https://github.com/RigelBuild/compass).
 
-Ledger-impact: pending. D1–D4 file as DL-535..DL-538 when Matt rules.
-DL-558 supersedes the DL-142 clause that keeps `jj-vine submit` as the push
-path (T8). DL-559 supersedes the OQ-10 clause of DL-442 unless OQ-1 is (c)
-(T9).
+Ledger-impact: pending. D1–D4 file as DL-535..DL-538 when the open
+questions close. DL-558 supersedes the DL-142 clause that keeps
+`jj-vine submit` as the push path (T8). DL-559 supersedes the OQ-10 clause
+of DL-442 (T9).
 
 **Named decisions this record introduces:** D1–D4 in
 [Decisions](#decisions).
 
 ## Open Questions
 
-1. **OQ-1 (load-bearing) — narrow the agent token.** DL-442 (OQ-10) keeps
-   `pull_requests: write` because "agents must be able to open pull
-   requests". After D2 the agent writes no PR.
-   - (a) `pull_requests: read`. Raw PR edits fail; `gh` PR reads work.
-   - (b) No `pull_requests`. `gh pr view` fails too.
-   - (c) Keep `write`. Any process can still edit a PR.
+1. **OQ-8 (load-bearing) — where the push credential lives.** The Server
+   mints a scoped App token and returns it as a file secret
+   (`brokeredSecretResolver.ResolveFor` in `go/server/git_credential.go`:
+   `Delivery: secrets.DeliveryFile`). `agentHost.Start` in
+   `go/internal/runner/host.go` installs it in the agent home
+   (`h.materializer.Install(ctx, handle.ID(), handle.HomeDir(), handle.WorkspaceUID(), resolved)`),
+   and `go/internal/runtime/secrets_materialize.go` routes the gh credential
+   to `~/.config/gh/hosts.yml`, "writing 0600 files". Any process with the
+   agent UID can read it. A local OMP tool or a stdio MCP server runs as
+   that UID with the same files as `bash`, so it is not a boundary. Runner
+   egress is default-deny (`EgressPolicy.NftScript` in
+   `go/internal/runtime/egress.go`: `policy drop`). The `--egress-allow` help
+   in `go/cmd/compass-runner/main.go` says "Agents that push with jj-vine
+   need github.com and api.github.com". `ForgeCallRequest`
+   (`ExecuteForgeCallAsAccount` in `go/server/forge.go`) carries forge API
+   calls, not git objects.
+   - (a) Server push. `vcs_submit` sends a `git bundle` of the own commits
+     (`<base>..<tips>`) in the `submit_stack` call. The Server applies it to
+     a per-repo bare mirror and pushes with its own App token, then runs D2.
+     The agent keeps a read-only token (`contents: read`,
+     `pull_requests: read`) for clone and fetch; a raw push fails at the
+     forge.
+   - (b) Credential sidecar: a separate UID in the agent pod holds the write
+     token and pushes; the tool calls it over a socket. This adds a process
+     per agent and does not help OQ-6.
+   - (c) Keep the agent push with the narrowed token now; move it later.
 
-   **Recommendation: (a).** The push guard draft kept `write` only because
-   a narrower token "breaks `jj-vine submit` PR creation".
+   **Recommendation: (a).** The write credential leaves the agent UID, and
+   the Server holds the objects it needs for OQ-6. Limits: a bundle must fit
+   one relay message (`runnerMaxReadBytes` in
+   `go/internal/runnerhub/handler.go` is `agentmsg.MaxBytes + 1<<20`, 17 MiB),
+   so a larger bundle is refused with that reason. Mirrors are usage-billed
+   storage and need a per-repo size cap with a row in the spend-cap table.
+   The Server rebase needs a VCS binary (T10). Fetch through the Server
+   mirror is [future direction](#future-direction).
 2. **OQ-2 (load-bearing) — what RIG-1882 becomes.** The push guard draft
    (RigelBuild/docs PR #13, DL-507..DL-510, not merged) blocks protected
    pushes, merges, and writes outside an owner allowlist.
    - (a) Narrow it: block every remote VCS write in `bash` and `eval` and
-     name the tool to use. Drop the allowlist; the Server checks scope.
+     name the tool to use.
    - (b) Keep the draft; redirect DL-510 to `vcs_submit`.
    - (c) Drop RIG-1882.
 
-   **Recommendation: (a).** Simpler and stricter. `vcs_retire` covers branch
-   deletion, so no carve-out is needed.
-3. **OQ-3 (load-bearing) — issue check.** `resolveIssueLink` in
-   `go/server/forge.go` checks shape only, "so a tracker outage never fails
-   a PR create". `RIG-99999` passes.
-   - (a) Forge issue, read with `GetIssue` at create. Not found refuses; an
-     outage allows and says so.
-   - (b) Forge issue, shape only.
-   - (c) Also a Compass board issue id.
+   **Recommendation: (c) if OQ-8 is (a), else (a).** Under OQ-8(a) the agent
+   holds only read scopes, so the forge refuses a raw push, merge, or PR
+   write, and the Server checks scope on every write it makes. A guard would
+   only add a second refusal. Under OQ-8(c) the agent still holds a write
+   token, and (a) is the narrow guard.
+3. **OQ-9 — pre-push time limit.** Under the OQ-7 ruling, `vcs_submit` runs
+   the repo's pre-push hook before push. (a) Fail open: after 120 s the tool
+   stops the hook, pushes, and reports the timeout. (b) Fail closed: refuse
+   the push.
 
-   **Recommendation: (a).** "Always an issue" then means a real issue.
-4. **OQ-4 (load-bearing) — stack shape.** (a) Linear only, refusing a fork
-   (D4). (b) Trees.
+   **Recommendation: (a).** CI on the PR is the main gate, and the hook only
+   catches cheap mistakes early.
 
-   **Recommendation: (a).** The merge queue accepts linear lines only.
-5. **OQ-5 (load-bearing) — jj-vine cutover.** Open jj-vine PRs have no
-   ownership row, so D2 treats them as foreign.
-   - (a) Coexist. T8 keeps a jj-vine section; T9 waits until no jj-vine PR
-     is open.
-   - (b) Close and resubmit. Review history is lost.
-   - (c) Adopt on first submit. Agent pushes and Server creates use one App:
-     `forge.NewScopedAppMinter` in `go/server/git_credential.go` and
-     `forge.NewAppTokenSource` in `go/server/serve.go` both take
-     `rc.App.AppID`. `ListMirrorComments` in `go/server/forge_mirror.go`
-     reads that login through an optional `AppLogin` assertion, not a
-     `forge.Provider` method. The forge author cannot name the agent, so
-     the claim cannot be checked.
+## Rulings
 
-   **Recommendation: (a).** No lost history, no unchecked claim.
-6. **OQ-6 (load-bearing) — another agent's PR in the line.** The jj skill
-   says to "base the later change on the tip of the first PR's line". No
-   tool rebases or pushes a foreign bookmark (D4).
-   - (a) The Server writes only the caller's PRs; a foreign block lags.
-   - (b) It also restamps the block, and only the block, in a foreign PR
-     with the same owner. DL-442 rules "grants are owner-level".
-   - (c) Refuse the line.
+Matt ruled on 2026-10-17 in the review threads of RigelBuild/docs PR #39.
 
-   **Recommendation: (b).** One block everywhere; D2 limits the write to the
-   block.
-7. **OQ-7 (load-bearing) — pre-push gate.** The jj skill says "Every push
-   runs the local gate first, through `jj-hp`". The image ships no `jj-hp`
-   (`agent-image/toolchain.nix`), and `jj git push` runs no git hooks
-   (jj 0.45.1, checked).
-   - (a) `vcs_submit` runs `hk run pre-push` (`moon ci`) with a time limit.
-   - (b) CI and the merge queue are the gate; T8 drops the promise.
-
-   **Recommendation: (b).** It states what runs today; (a) blocks one call
-   for minutes.
+- **OQ-1 — agent token.** If the agent keeps any forge token, it has
+  `pull_requests: read`. Raw PR edits fail; `gh` PR reads work.
+- **OQ-3 — issue check.** The Server checks that the issue exists at
+  create. Accepted formats are the user's own: GitHub `#12` and
+  `owner/repo#12`, and a Linear key for any team the user has configured.
+  No team key is hard-coded (D3).
+- **OQ-4 — stack shape.** Linear only; `vcs_submit` refuses a fork (D4).
+  GitHub's stacked-PR feature allows only linear lines.
+- **OQ-5 — jj-vine cutover.** Close and resubmit. The cutover closes each
+  open jj-vine PR and resubmits its line through the tools. The new PR body
+  links the old PR; review history on the old PR is lost. There is no
+  period where both paths run (T8, T9).
+- **OQ-6 — another agent's PR in the line.** The Server manages the whole
+  line. When a line holds a PR another agent authored under the same owner
+  (DL-442: "grants are owner-level"), the Server rebases and pushes that
+  bookmark and tells the owning agent. On a rebase conflict it pushes
+  nothing and asks the owning agent to resolve. This needs the Server to
+  hold the repo and push (OQ-8). The jj skill rule to "base the later
+  change on the tip of the first PR's line" only worked around missing
+  coordination.
+- **OQ-7 — pre-push gate.** `vcs_submit` runs cheap format and lint checks
+  through the repo's own configured hook runner, not a runner Compass picks.
+  The Setup agent installs basic hooks in a repo that has none. CI on the
+  PR is the main gate, because full suites do not fit small agent compute.
+  Time limit: OQ-9.
 
 ## Problem / Intent
 
@@ -92,13 +112,14 @@ body, require an issue per PR, and let the Server own one stack block.
 
 ## Global Constraints
 
-- No new agent credential. Push uses the RIG-4724 token; every PR write goes
-  through the Server forge broker (DL-052).
+- The agent gains no credential. Every PR write and, under OQ-8(a), every
+  push goes through the Server forge broker (DL-052).
 - The Server alone writes the owner header (DL-050) and the stack block, and
   strips both from agent text.
 - No `@connectrpc` import outside `packages/compass-agent/src/transport/**`.
 - `jj` runs from an argument array with `--no-pager --color=never`; no editor.
-- No tool rebases, tracks, or pushes another agent's bookmark.
+- No agent tool rebases, tracks, or pushes another agent's bookmark; only
+  the Server does (OQ-6 ruling).
 - Write tools in one agent run one at a time.
 - `vcs_*` are Manager tools; `subagent-tool-split.test.ts` is unchanged.
 - PR numbers are `uint64` in Go, as in `forge.Provider`.
@@ -111,9 +132,11 @@ body, require an issue per PR, and let the Server own one stack block.
 
 ## Approach
 
-**D1 — hybrid split.** Local jj work and push run in the agent
+**D1 — hybrid split.** Local jj work runs in the agent
 (`packages/compass-agent/src/vcs.ts`). PR writes run in the Server through
-two new `ForgeCallRequest` arms. Seven tools:
+two new `ForgeCallRequest` arms. The push location depends on OQ-8; this
+record describes the recommended shape, a Server push from a bundle
+(T10). Seven tools:
 
 | Tool | Approval | Does |
 | --- | --- | --- |
@@ -121,8 +144,8 @@ two new `ForgeCallRequest` arms. Seven tools:
 | `vcs_commit` | write | Describes `@` (or `<workspace>@`) from fields, sets a bookmark, then `jj new <bookmark>`. |
 | `vcs_workspace` | write | `add`, `forget`, or `update-stale` one subagent workspace. |
 | `vcs_sync` | write | `jj git fetch`, then rebases the own commits onto the base (D4). Reports conflicts. |
-| `vcs_submit` | write | Sync, D4 checks, push of the own bookmarks, then `submit_stack`. |
-| `vcs_retire` | write | Closes one own PR through the Server, deletes its bookmark, pushes that one deletion. |
+| `vcs_submit` | write | Sync, D4 checks, pre-push hook, then `submit_stack` with a bundle of the own commits. |
+| `vcs_retire` | write | Deletes one own local bookmark; the Server closes its PR and deletes that one remote branch. |
 | `vcs_pr_status` | read | Calls `stack_status`: PR, state, draft, checks, and authorship per bookmark. |
 
 Subagents edit files only. The Manager commits their work with
@@ -172,11 +195,13 @@ caller's repo casing", so the new lookup folds GitHub case, as
 (`CASE WHEN $1 = 1 THEN lower(s.repo) ELSE s.repo END`). When old rows
 differ only in case, the oldest wins, as write-once authorship does.
 
-Only the author updates a PR, with one exception if OQ-6 is (b): when a
-foreign PR's ownership row names the caller's owner, the Server rewrites its
-stack block only. It strips the compass and jj-vine blocks, stamps the new
-block, and keeps every other byte. Any other foreign write is refused, as is
-every write to an unrecorded PR the caller cannot adopt.
+Only the author updates a PR, with one exception (OQ-6 ruling): when a
+foreign PR in the caller's line has an ownership row with the caller's
+owner, the Server rebases that bookmark in its mirror, pushes it, restamps
+only its block, and posts a message to the owning agent naming the new
+head. On a conflict it pushes nothing, marks the entry failed, and asks the
+owning agent to resolve. Any other foreign write is refused, as is every
+write to an unrecorded PR the caller cannot adopt.
 
 `vcs_retire` closes through `transition_pull_request_state`.
 `transitionPullRequestState` goes from scope check to forge call with no
@@ -189,15 +214,20 @@ pr, err := rf.author.TransitionPullRequestState(ctx, req.GetRepo(), req.GetPrNum
 ```
 
 T5 makes close fail closed: it runs only when an ownership row names the
-caller. A PR with no row, such as a jj-vine PR under OQ-5(a), is refused;
-during coexistence its author closes it outside the tools.
+caller. After the OQ-5 cutover every open PR was created by the tools, so a
+PR with no row is a human's or a foreign App's, and refusing it is correct.
 
 **D3 — issue and text.** Each PR names its own issue: #2334
 ("Refs RIG-5511") stacks on #2333 (RIG-5510). `vcs_submit` takes a
 bookmark-to-issue map, required for bookmarks with no PR. The Server parses
-the raw ref with `refs.Parse` and maps it as `resolveMirrorCoordinate` in
-`go/server/forge_mirror.go` does: tracker key to Linear, `owner/repo#12` to
-GitHub.
+the user's ref into `PullRequestIssueLink`, whose `repo` is "owner/name;
+the team key on Linear". `refs.Parse` reads a Linear key (`TEAM-12`, any
+2–10 character team key) or `owner/repo#12`; the tool expands a bare `#12`
+to the PR's own repo first. `resolveIssueLink` in `go/server/forge.go`
+refuses a forge with no provider: "forge: no provider configured for the
+issue's coordinate". The Server then reads the issue with `GetIssue`. Not
+found, including a team key the user has not connected, refuses. An outage
+allows and says so.
 
 The tools compose the agent's content. A segment's first commit is
 `roots(<below>..<bookmark>)`. The title is its subject plus `(RIG-12)`; the
@@ -216,14 +246,23 @@ on one have a foreign base.
 Sync runs `jj git fetch --remote origin`, then
 `jj rebase -s 'roots(<own>)' -o <base> --skip-emptied`, where `<base>` is
 `trunk()` or `<foreign>@origin`. In jj 0.45.1, `--skip-emptied` drops a
-squash-landed commit, fetch does not follow an advanced foreign base, and a
-push over a foreign name fails ("Non-tracking remote bookmark fx@origin
-exists"). Sync tracks a remote bookmark only if `stack_status` says the
-caller authored its PR.
+squash-landed commit and fetch does not follow an advanced foreign base.
+Sync tracks a remote bookmark only if `stack_status` says the caller
+authored its PR.
 
 Before push the tool refuses conflicts, merges, empty descriptions, two
 bookmarks on one commit, unpublished commits above the tip, and a fork:
-`(descendants(<own>) & bookmarks()) ~ ::<tip>` is not empty.
+`(descendants(<own>) & bookmarks()) ~ ::<tip>` is not empty. It then runs
+`git hook run --ignore-missing pre-push` in the colocated repo root, so the
+repo's own hook runner decides what runs; OQ-9 bounds the time.
+`jj git push` runs no git hooks (jj 0.45.1, checked), so the tool calls the
+hook itself.
+
+Under OQ-8(a), `vcs_submit` runs `git bundle create` for
+`<base>..<own bookmarks>` and sends it with `submit_stack`. The Server
+fetches the bundle into its mirror, checks that each bookmark's commit is
+in it, and pushes the own bookmarks with its App token before the PR
+writes. A foreign base must already be on the forge.
 
 Each bookmark is one PR, based on the bookmark below, the foreign base, or
 trunk. The block sits between `<!-- compass:stack -->` and
@@ -231,9 +270,8 @@ trunk. The block sits between `<!-- compass:stack -->` and
 Server strips every compass and jj-vine block in a loop, because
 `remove_jj_vine_stack_from_description` in jj-vine matches only one pair.
 
-**Alternatives.** Server-side push waits on RIG-4433. Wrapping jj-vine keeps
-agent-token PR writes. GitHub native stacks can follow once their
-merge-queue effect is checked.
+**Alternatives.** An agent-side push keeps a write token on the agent UID
+(OQ-8). Wrapping jj-vine keeps agent-token PR writes.
 
 ## Plan
 
@@ -292,13 +330,18 @@ message StackEntry {
   string base_ref = 2;
   string title = 3;
   string body = 4;
-  string issue_ref = 5;  // refs grammar; required when the PR is created
+  string issue_ref = 5;  // user's format; required when the PR is created
   bool replace_text = 6;
 }
 message SubmitStackRequest {
   string repo = 1;
   repeated StackEntry entries = 2;  // bottom to top
   string ready_head_ref = 3;        // empty = no entry leaves draft
+  bytes bundle = 4;                 // git bundle of the own commits (OQ-8a)
+}
+message RetireHeadRequest {
+  string repo = 1;
+  string head_ref = 2;
 }
 message StackStatusRequest {
   string repo = 1;
@@ -323,9 +366,10 @@ message StackResult {
 }
 ```
 
-`ForgeCallRequest` adds `submit_stack = 17`, `stack_status = 18`;
-`ForgeCallResult` adds `stack = 11`. The `client_request_id` comment
-("oneof arms 2-11, 14-16") becomes `2-11, 14-18`. Red → green: buf gates.
+`ForgeCallRequest` adds `submit_stack = 17`, `stack_status = 18`,
+`retire_head = 19`; `ForgeCallResult` adds `stack = 11`. The
+`client_request_id` comment ("oneof arms 2-11, 14-16") becomes
+`2-11, 14-19`. Red → green: buf gates.
 
 ### T4 — store: submit intent and case-folded lookup
 
@@ -365,13 +409,17 @@ Interfaces (`go/server/forge.go`):
 ```go
 func (s *forgeService) submitStack(ctx context.Context, caller store.AccountID, sessionID string, call *compassv1internal.ForgeCallRequest, req *compassv1internal.SubmitStackRequest) *compassv1internal.ForgeCallResult
 func (s *forgeService) stackStatus(ctx context.Context, caller store.AccountID, call *compassv1internal.ForgeCallRequest, req *compassv1internal.StackStatusRequest) *compassv1internal.ForgeCallResult
+func (s *forgeService) retireHead(ctx context.Context, caller store.AccountID, call *compassv1internal.ForgeCallRequest, req *compassv1internal.RetireHeadRequest) *compassv1internal.ForgeCallResult
 ```
 
 `forgeStore` adds the T4 methods; `transitionPullRequestState` gains the D2
-authorship refusal. Red → green (`FakeProvider`):
+authorship refusal. `submitStack` resolves `issue_ref` and checks it with
+`GetIssue` (D3). Red → green (`FakeProvider`, T10 fake mirror):
 
 - A new entry without `issue_ref` fails; two entries make two drafts with
   chained bases; a retry creates nothing; a merged head refuses.
+- `TEAM-12` for an unconfigured team and a not-found issue refuse; an
+  outage allows with a warning.
 - Two new entries under one call key: two PRs, two rows with a NULL key.
 - The store write after a create fails; a retry ends with one PR on the
   forge and one ownership row.
@@ -379,11 +427,13 @@ authorship refusal. Red → green (`FakeProvider`):
 - A mid-stack 429: earlier entries done, that entry failed, later entries
   skipped with no provider call.
 - Only `ready_head_ref` leaves draft.
-- Under OQ-6(b), a same-owner foreign body changes only inside the block; a
-  foreign title, base, draft, or `replace_text` write and a different-owner
-  foreign PR are refused.
+- A same-owner foreign PR in the line is rebased, pushed, and restamped,
+  and its agent gets a message; a conflict pushes nothing and asks that
+  agent to resolve; a different-owner foreign PR is refused.
 - A same-scope close of a PR another agent authored, and of a PR with no
   row, is refused with no provider call; the author's own close runs.
+- `retireHead` closes an own PR and deletes only that branch; a retry after
+  either step finishes with no second close; a foreign head refuses.
 
 ### T6 — jj runner and local tools
 
@@ -417,40 +467,57 @@ the rebase; a foreign base is never a rebase source; a conflict is reported.
 // vcs_pr_status { bookmark?: string }
 ```
 
-`vcs_submit` syncs, checks, runs `jj git push --remote origin -b <own>…`,
-then `submit_stack` (`ready_head_ref` = tip on `ready`); it refuses trunk.
-`vcs_retire` refuses a PR it did not author. Before any write it runs
-`jj git push --deleted --dry-run --remote origin` and refuses if any
-bookmark or tag other than `<name>` is pending deletion (`--deleted`
-pushes all of them). It then closes the PR through
-`transition_pull_request_state` unless it is already closed, deletes
-`<name>` unless already deleted, repeats the dry run, checks the plan
-deletes exactly `<name>`, and runs `jj git push --deleted --remote origin`.
-Each step skips when done, so a retry after a failed push finishes the job.
-After `jj git fetch`, a closed PR with no `<name>@origin` and no pending
-deletion is already retired and returns success.
-(`-b <name>` does not push a deleted bookmark.)
+`vcs_submit` syncs, checks, runs the pre-push hook (D4, OQ-9), builds the
+bundle, then calls `submit_stack` (`ready_head_ref` = tip on `ready`); it
+refuses trunk and a bundle over the relay limit. `vcs_retire` calls
+`retire_head`, then deletes the local bookmark and fetches. A closed PR
+with no `<name>@origin` returns success, so a retry is safe.
 `packages/compass-agent/src/cli.ts` adds the tools to `nativeTools`.
-Red → green: each D4 refusal and a missing issue fail before push; push
-precedes the broker call; `vcs_retire` deletes exactly one remote ref; a
-pending deletion of another ref refuses with no close and no local change;
-a retry after a failed push completes with no second close; a retry after
-a push that landed but reported an error returns success.
+Red → green: each D4 refusal and a missing issue fail before the broker
+call; a hook failure refuses; a hook that runs past the OQ-9 limit is
+stopped and reported; the bundle names every own bookmark; `vcs_retire`
+changes no local state when `retire_head` fails.
 
-### T8 — prompt, skill, and DL-558
+### T8 — prompt, skill, cutover, and DL-558
 
 `config/prompts/manager/SYSTEM.md` and `config/skills/jj/SKILL.md` name the
-tools and drop `jj-vine submit` and `jj-hp`, except the OQ-5(a) section.
-Red → green: `packages/compass-agent/src/vcs-prompt.test.ts` fails on
-`jj-vine submit` outside that section.
+tools and drop `jj-vine submit` and `jj-hp`. Red → green:
+`packages/compass-agent/src/vcs-prompt.test.ts` fails on `jj-vine submit`.
+The Setup agent's prompt installs a basic pre-push hook (format and lint)
+in a repo that has none. Cutover (OQ-5): for each open jj-vine PR, the
+owning agent resubmits its line through `vcs_submit` with new bookmark
+names, the new body links the old PR, and the old PR is closed with a link
+to the new one.
 
 ### T9 — remove jj-vine and narrow the token
 
-Gated on OQ-5 and OQ-1. Drop `jjVine` and `[jj-vine]` from
+Runs after the T8 cutover. Drop `jjVine` and `[jj-vine]` from
 `agent-image/toolchain.nix` (`TestAgentImageVCSTools` in
 `go/e2e/image_toolchain_test.go` expects it absent). Set
-`gitCredentialPermissions` per OQ-1, pinned in `git_credential_test.go`
-first. Files DL-559.
+`gitCredentialPermissions` to `contents: read`, `pull_requests: read`,
+pinned in `git_credential_test.go` first. The agent egress allowlist keeps
+`github.com` and `api.github.com` for fetch and `gh` reads; the read-only
+token is what blocks writes. Files DL-559.
+
+### T10 — Server mirror and push
+
+Interfaces (`go/internal/forge/mirror.go`):
+
+```go
+type Mirror interface {
+	ApplyBundle(ctx context.Context, repo string, bundle []byte) error
+	Push(ctx context.Context, repo string, refs map[string]string) error // ref -> commit; "" deletes
+	Rebase(ctx context.Context, repo, ref, onto string) (newHead string, conflict bool, err error)
+}
+```
+
+A per-repo bare git repo on Server storage with a per-repo size cap,
+fetched from the forge before each apply and pushed with the App token.
+`Push` pushes only the refs it is given, with a lease on the old commit.
+`Rebase` uses `git replay`. The Server image gains `git`. The spend-cap
+table gains a mirror storage row. Red → green (temp repos): a bundle with
+missing commits refuses; a stale lease refuses; a conflicting rebase
+returns `conflict` and pushes nothing; a repo over its cap refuses.
 
 ## Tasks
 
@@ -461,15 +528,30 @@ first. Files DL-559.
 - [ ] T5 — Server arms
 - [ ] T6 — jj runner and local tools
 - [ ] T7 — submit, retire, PR status, and wiring
-- [ ] T8 — prompt, skill, and DL-558
+- [ ] T8 — prompt, skill, cutover, and DL-558
 - [ ] T9 — remove jj-vine and narrow the token
+- [ ] T10 — Server mirror and push
+
+## Future direction
+
+Out of scope. The Server mirror in T10 can grow into the remote agents talk
+to instead of the forge: the Server runs extra checks before anything
+leaves, which matters most for public repos, and keeps git and GitHub
+compatibility because users stay on GitHub. Agents would then fetch from
+the mirror too. References: [Redesigning source
+control](https://www.anthropic.com/engineering/redesigning-source-control)
+(server-side commits and rebases, clients always online) and
+[Twigg](https://github.com/twigg-vc/monorepo) (open-source stacked-change
+review with a git mirror).
 
 ## Decisions
 
-- **D1** (DL-535 on ruling) — Local jj and push in the agent; PR writes in
-  the Server; seven Manager tools.
+- **D1** (DL-535 on ruling) — Local jj in the agent; PR writes and, per
+  OQ-8, push in the Server; seven Manager tools.
 - **D2** (DL-536 on ruling) — Any-state head lookup, a durable intent
-  before create, and updates and closes only by the author.
-- **D3** (DL-537 on ruling) — An issue per PR; text composed once.
-- **D4** (DL-538 on ruling) — Sync without rewriting foreign bookmarks; one
-  Server-owned stack block.
+  before create, author-only updates and closes, and Server-managed
+  same-owner foreign PRs in a line.
+- **D3** (DL-537 on ruling) — An issue per PR in the user's formats,
+  checked to exist; text composed once.
+- **D4** (DL-538 on ruling) — Linear lines, sync, the repo's own pre-push
+  hook, and one Server-owned stack block.
