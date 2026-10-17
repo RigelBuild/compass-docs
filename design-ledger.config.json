@@ -10,6 +10,5 @@
 		"errata": true,
 		"recordLinks": true,
 		"mainIds": true
-	},
-	"exemptBranchPrefixes": ["renovate/", "trunk-merge/"]
+	}
 }
