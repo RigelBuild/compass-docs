@@ -9,6 +9,15 @@ Amendment record of the compass-agent Effect adoption design
 That record's alternative (d) pinned stable Effect 3.x and said a later 3→4
 major would be its own change. This is that change. The parent stays frozen.
 
+It also amends the transport OTel design
+([`compass-agent-effect-otel/design.md`](https://github.com/RigelBuild/compass/blob/main/docs/designs/repo/compass-agent-effect-otel/design.md)).
+That record's plan is already built on `main`: `otel-layer.ts`,
+`otel-metrics.ts`, the spine and sink metrics, and `outbound-spans.test.ts`
+exist, and the catalog pins `@effect/opentelemetry` 0.64.0. Its Effect
+3.22.1 floor and its exact pin of `@effect/opentelemetry` 0.64.0 are
+superseded by this record's Versions constraint. Its other decisions (spans,
+metrics, exporter wiring) stand, with the API names mapped below.
+
 Ledger-impact: DL-524, DL-529.
 
 ## Problem / Intent
@@ -73,16 +82,34 @@ renames and moves are below; the four gaps follow.
 
 ### API map
 
-Every Effect 4 symbol in this table and the gaps resolves to an
-`export declare const` in `effect@4.0.5`'s `dist/<Module>.d.ts`: `Effect.result`,
-`andThen`, `forkChild`, `yieldNow`; `Result.isSuccess`; `Clock.Clock`;
-`Metric.update`, `withAttributes`, `exponentialBoundaries`; `Queue.offerUnsafe`,
-`sizeUnsafe`, `takeUnsafe`; `Cause.findErrorOption`; `Scope.provide`;
-`Logger.layer`, `tracerLogger`; `Schedule.recurs`, `modifyDelay`; and `layer` in
-`dist/testing/TestClock.d.ts`, each matching `^export declare const <name>`
-exactly once. `updateUnsafe` is a member of the `Metric` interface:
-`(input: Input, context: Context.Context<never>) => void`, and
-`currentTimeNanosUnsafe(): bigint` is a member of `Clock` in `dist/Clock.d.ts`.
+Each Effect 4 name below is quoted from `effect@4.0.5`'s installed
+declarations under `node_modules/effect/dist/` (the first overload where
+there are several).
+
+| Symbol | Declaration (`effect@4.0.5`) |
+| -- | -- |
+| `Effect.result` (`Effect.d.ts`) | `export declare const result: <A, E, R>(self: Effect<A, E, R>) => Effect<Result.Result<A, E>, never, R>;` |
+| `Effect.andThen` (`Effect.d.ts`) | `<A, B, E2, R2>(f: (a: A) => Effect<B, E2, R2>): <E, R>(self: Effect<A, E, R>) => Effect<B, E \| E2, R \| R2>;` |
+| `Effect.forkChild` (`Effect.d.ts`) | `export declare const forkChild: <Arg extends Effect<any, any, any> \| { readonly startImmediately?: boolean \| undefined; … }>` |
+| `Effect.yieldNow` (`Effect.d.ts`) | `export declare const yieldNow: Effect<void>;` |
+| `Result.isSuccess` (`Result.d.ts`) | `export declare const isSuccess: <A, E>(self: Result<A, E>) => self is Success<A, E>;` |
+| `Clock.Clock` (`Clock.d.ts`) | `export declare const Clock: Context.Reference<Clock>;` with interface member `currentTimeNanosUnsafe(): bigint;` |
+| `Metric.update` (`Metric.d.ts`) | `<Input>(input: Input): <State>(self: Metric<Input, State>) => Effect<void>;` |
+| `Metric.withAttributes` (`Metric.d.ts`) | `(attributes: Metric.Attributes): <Input, State>(self: Metric<Input, State>) => Metric<Input, State>;` |
+| `Metric.exponentialBoundaries` (`Metric.d.ts`) | `export declare const exponentialBoundaries: (options: { readonly start: number; … })` |
+| `metric.updateUnsafe` (`Metric.d.ts`, interface member) | `readonly updateUnsafe: (input: Input, context: Context.Context<never>) => void;` |
+| `Queue.offerUnsafe` (`Queue.d.ts`) | `export declare const offerUnsafe: <A, E>(self: Enqueue<A, E>, message: Types.NoInfer<A>) => boolean;` |
+| `Queue.sizeUnsafe` (`Queue.d.ts`) | `export declare const sizeUnsafe: <A, E>(self: Dequeue<A, E>) => number;` |
+| `Queue.takeUnsafe` (`Queue.d.ts`) | `export declare const takeUnsafe: <A, E>(self: Dequeue<A, E>) => Exit<A, E> \| undefined;` |
+| `Cause.findErrorOption` (`Cause.d.ts`) | `export declare const findErrorOption: <E>(input: Cause<E>) => Option<E>;` |
+| `Scope.provide` (`Scope.d.ts`) | `(value: Scope): <A, E, R>(self: Effect<A, E, R>) => Effect<A, E, Exclude<R, Scope>>;` |
+| `Logger.layer` (`Logger.d.ts`) | `<const Loggers extends ReadonlyArray<…>>(loggers: Loggers, options?: { readonly mergeWithExisting?: boolean \| undefined; … })` |
+| `Logger.tracerLogger` (`Logger.d.ts`) | `export declare const tracerLogger: Logger<unknown, void>;` |
+| `Schedule.recurs` (`Schedule.d.ts`) | `export declare const recurs: (times: number) => Schedule<number>;` |
+| `Schedule.modifyDelay` (`Schedule.d.ts`) | `<Output, Input, Error2 = never, Env2 = never>(f: (metadata: Metadata<Output, Input>) => Effect<Duration.Input, Error2, Env2>): …` |
+| `TestClock.layer` (`testing/TestClock.d.ts`) | `export declare const layer: (options?: TestClock.Options) => Layer.Layer<TestClock>;` |
+
+The v3 to v4 mapping:
 
 | Effect 3 | Effect 4 | Where |
 | -- | -- | -- |
