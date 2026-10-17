@@ -315,6 +315,7 @@ Interfaces (`go/internal/store/forge_authored.go`):
 ```go
 type SubmitIntent struct {
 	Provider       ForgeProvider
+	Host           string // ForgeCoord.Host, as forgeCoordinate resolves it
 	Repo           string // ForgeCoord.Normalized()
 	HeadRef        string
 	AgentAccountID AccountID
@@ -334,8 +335,9 @@ Table `forge_pr_submit_intents` in `migrations/0001_init.sql`: PK
 `forge_authored_artifacts` agent/owner FK, RLS; sqlc queries in
 `queries/forge_authored.sql`. `RecordSubmitIntent` commits on its own.
 Existing rows need no backfill. Red → green (`pgtest`): another agent's
-intent conflicts; a retry succeeds; mixed case finds the row; two rows that
-differ only in case return the oldest.
+intent conflicts; a retry succeeds; the same repo and head on two hosts are
+two intents; mixed case finds the row; two rows that differ only in case
+return the oldest.
 
 ### T5 — Server arms
 
