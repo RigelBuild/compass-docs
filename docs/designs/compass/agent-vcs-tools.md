@@ -47,10 +47,11 @@ of DL-442 (T9).
    **Recommendation: (a).** The write credential leaves the agent UID, and
    the Server holds the objects it needs for OQ-6. Limits: the first hop
    caps a message at `maxAgentMessageBytes = agentmsg.MaxBytes` (16 MiB,
-   `go/internal/runner/gateway/gateway.go`), so the tool refuses a bundle
-   over 15 MiB and names the limit. Mirrors are disk on the Server and need
-   caps (T10). The Server rebase needs `git` (T10). Fetch through the
-   Server mirror is [future direction](#future-direction).
+   `go/internal/runner/gateway/gateway.go`). The tool serializes the whole
+   `ForgeCallRequest`, bundle and entries, and refuses it over 15 MiB with
+   that reason. Mirrors need storage caps, and the Server rebase needs `git`
+   (T10). Fetch through the Server mirror is
+   [future direction](#future-direction).
 2. **OQ-2 (load-bearing) — what RIG-1882 becomes.** The push guard draft
    (RigelBuild/docs PR #13, DL-507..DL-510, not merged) blocks protected
    pushes, merges, and writes outside an owner allowlist.
@@ -64,10 +65,12 @@ of DL-442 (T9).
    write, and the Server checks scope on every write it makes. A guard would
    only add a second refusal. Under OQ-8(c) the agent still holds a write
    token, and (a) is the narrow guard.
-3. **OQ-9 — pre-push time limit.** Under the OQ-7 ruling, `vcs_submit` runs
-   the repo's pre-push hook before push. (a) Fail open: after 120 s the tool
-   stops the hook, pushes, and reports the timeout. (b) Fail closed: refuse
-   the push.
+3. **OQ-9 (load-bearing) — pre-push time limit.** Under the OQ-7 ruling,
+   `vcs_submit` runs the repo's pre-push hook before push. T7's timeout
+   behavior follows this ruling.
+   - (a) Fail open: after 120 s the tool stops the hook, pushes, and reports
+     the timeout.
+   - (b) Fail closed: refuse the push.
 
    **Recommendation: (a).** CI on the PR is the main gate, and the hook only
    catches cheap mistakes early.
@@ -197,14 +200,17 @@ differ only in case, the oldest wins, as write-once authorship does.
 Only the author updates a PR, with one exception (OQ-6 ruling): when a
 foreign PR in the caller's line has an ownership row with the caller's
 owner, the Server rebases that bookmark in its mirror, pushes it, restamps
-only its block, and tells the owning agent. The notice is a message
-appended with `AppendMessage` (`go/internal/store/messages.go`) to that
-agent's home channel, which `UndeliveredMessages` "always sweeps", so an
-offline agent reads it on its next start. It names the bookmark, the old
-and new head, and the PR. On a conflict the Server pushes nothing, marks
-the entry failed, and sends the same kind of message asking the owning
-agent to resolve. Any other foreign write is refused, as is every write to
-an unrecorded PR the caller cannot adopt.
+only its block, and tells the owning agent. The notice goes to that
+agent's home channel through the path `Comms.PostMessage` uses:
+`AppendMessage` stores it, then `publishMessagePosted` publishes
+`MessagePosted`, so a live agent gets it at once. `UndeliveredMessages`
+"always sweeps" the home channel, so an offline agent reads it on its next
+start, and a failed publish is left to "the delivery recovery sweep". The
+notice names the bookmark, the old and new head, and the PR. On a conflict
+the Server pushes nothing, marks the entry failed, and sends the same kind
+of notice asking the owning agent to resolve.
+Any other foreign write is refused, as is every write to an unrecorded PR
+the caller cannot adopt.
 
 `vcs_retire` closes through `transition_pull_request_state`.
 `transitionPullRequestState` goes from scope check to forge call with no
@@ -434,8 +440,9 @@ authorship refusal. `submitStack` resolves `issue_ref` and checks it with
 - A mid-stack 429: earlier entries done, that entry failed, later entries
   skipped with no provider call.
 - Only `ready_head_ref` leaves draft.
-- A same-owner foreign PR in the line is rebased, pushed, and restamped,
-  and its agent gets a message; a conflict pushes nothing and asks that
+- A same-owner foreign PR in the line is rebased, pushed, and restamped;
+  a live owning agent receives `MessagePosted` and an offline one finds the
+  notice in its home-channel sweep; a conflict pushes nothing and asks that
   agent to resolve; a different-owner foreign PR is refused.
 - A same-scope close of a PR another agent authored, and of a PR with no
   row, is refused with no provider call; the author's own close runs.
@@ -476,15 +483,16 @@ the rebase; a foreign base is never a rebase source; a conflict is reported.
 
 `vcs_submit` syncs, checks, runs the pre-push hook (D4, OQ-9), builds the
 bundle, then calls `submit_stack` (`ready_head_ref` = tip on `ready`); it
-refuses trunk and a bundle over the relay limit. `vcs_retire` calls
+refuses trunk and a serialized call over 15 MiB. `vcs_retire` calls
 `retire_head`, then deletes the local bookmark and fetches. A closed PR
 with no `<name>@origin` returns success, so a retry is safe.
 `packages/compass-agent/src/cli.ts` adds the tools to `nativeTools`.
 Red → green: each D4 refusal and a missing issue fail before the broker
 call; a hook failure refuses; a test hook receives `origin`, the URL, and
-one stdin line per own bookmark; a hook that runs past the OQ-9 limit is
-stopped and reported; the bundle names every own bookmark; a 15 MiB + 1
-bundle refuses with no broker call; `vcs_retire` changes no local state
+one stdin line per own bookmark; a hook past the OQ-9 limit is stopped and
+handled as OQ-9 rules; the bundle names every own bookmark; a call whose
+bundle plus large entry bodies passes 15 MiB refuses with no broker call,
+and one just under passes the gateway; `vcs_retire` changes no local state
 when `retire_head` fails.
 
 ### T8 — prompt, skill, cutover, and DL-558
@@ -522,14 +530,17 @@ type Mirror interface {
 }
 ```
 
-A per-repo bare git repo under the Server's `--state-dir`, fetched from the
+A per-repo bare git repo under the Server's `--vcs-mirror-dir`, fetched from the
 forge before each apply and pushed with the App token. `Push` pushes only
 the refs it is given, with a lease on the old commit. `Rebase` uses
-`git replay`. The Server image gains `git`. Two enforced caps refuse an
-apply that would cross them: a per-repo size and a total size across all
-mirrors, both Server flags. A deployment whose disk is usage-billed adds its
-own storage cap, a billing alert, and spend-cap rows before it turns the
-mirror on. Red → green (temp repos): a bundle with missing commits refuses;
+`git replay`. The Server image gains `git`. The mirror is off unless the
+`--vcs-mirror-dir` flag is set, so this change adds no spend by itself. Two
+caps refuse an apply that would cross them: a per-repo size and a total
+size across all mirrors, both flags, with the total below the volume size.
+The mirror directory must sit on a fixed-size volume, so disk use cannot
+grow the bill. The change that turns the mirror on in a deployment states
+that volume's size cap, the billing alert, and the spend-cap rows.
+Red → green (temp repos): a bundle with missing commits refuses;
 a stale lease refuses; a conflicting rebase returns `conflict` and pushes
 nothing; an apply over either cap refuses.
 
