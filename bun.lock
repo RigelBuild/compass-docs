@@ -17,6 +17,8 @@
         "wrangler": "4.128.0",
       },
       "devDependencies": {
+        "@rigelbuild/biome-config": "1.0.0",
+        "@rigelbuild/tsconfig": "1.0.0",
         "@types/bun": "1.4.2",
         "typescript": "6.0.3",
       },
@@ -289,11 +291,15 @@
 
     "@poppinss/exception": ["@poppinss/exception@1.2.3", "", {}, "sha512-dCED+QRChTVatE9ibtoaxc+WkdzOSjYTKi/+uacHWIsfodVfpsueo3+DKpgU5Px8qXjgmXkSvhXvSCz3fnP9lw=="],
 
+    "@rigelbuild/biome-config": ["@rigelbuild/biome-config@1.0.0", "", {}, "sha512-D3rzz0uej7PHclqboIqum9SYUR0ZttIYkATZi50CWzhLWN+TftfqXqfWikIf2FM42p0sBEdTpsv+WxgcPV214g=="],
+
     "@rigelbuild/design-ledger-gate": ["@rigelbuild/design-ledger-gate@1.0.1", "", { "bin": { "design-ledger-gate": "index.ts" } }, "sha512-CEIKTotMDSjEtVMYxTH8pGe5HU2BJWuOgpACubSpQLTczg9S2J6Ze06owi52q/mvSR3mP0d7QUatXSbQVY7w5w=="],
 
     "@rigelbuild/dl-claim": ["@rigelbuild/dl-claim@1.0.1", "", { "dependencies": { "@rigelbuild/design-ledger-gate": "1.0.1" }, "bin": { "dl-claim": "index.ts" } }, "sha512-kiTBWqEhdVwN1xhjhIEM7fcNKiYsG6GR3BC109L5Ozr3M5HOrkB2mJpy87rzyrRa93RqkaCgCu/QxtkKIoikgg=="],
 
     "@rigelbuild/ref-gate": ["@rigelbuild/ref-gate@1.0.0", "", { "bin": { "ref-gate": "index.ts" } }, "sha512-ZWq24B8dYrCzC0O/QjLIFL9PhbBSjaDdJ6ZOvYyVk2IzY+icK9jDdwAgne9Ylg7UqgA2ywgUjWuBtbr7kko/tg=="],
+
+    "@rigelbuild/tsconfig": ["@rigelbuild/tsconfig@1.0.0", "", {}, "sha512-l1SY3uaeICqJvmmN/BrTLg7IqQZmQcv4dhbiYKKOSMEFnkFUMjvSrugYSmkkglIzprxob81iSlL+I2Pym6eXjw=="],
 
     "@rolldown/binding-android-arm-eabi": ["@rolldown/binding-android-arm-eabi@1.2.13", "", { "os": "android", "cpu": "arm" }, "sha512-Vu/NICrgdRvUOeaJZIyB2FP63s6fO/4ud5l8dXmxDx9yDyn+mN0y+gsvsVviSli+T361Aqo0h46EuMoobrwawA=="],
 
