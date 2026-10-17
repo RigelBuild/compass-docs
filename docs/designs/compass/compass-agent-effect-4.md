@@ -79,8 +79,10 @@ Every Effect 4 symbol in this table and the gaps resolves to an
 `Metric.update`, `withAttributes`, `exponentialBoundaries`; `Queue.offerUnsafe`,
 `sizeUnsafe`, `takeUnsafe`; `Cause.findErrorOption`; `Scope.provide`;
 `Logger.layer`, `tracerLogger`; `Schedule.recurs`, `modifyDelay`; and `layer` in
-`dist/testing/TestClock.d.ts`. `updateUnsafe` is a member of the `Metric`
-interface: `(input: Input, context: Context.Context<never>) => void`.
+`dist/testing/TestClock.d.ts`, each matching `^export declare const <name>`
+exactly once. `updateUnsafe` is a member of the `Metric` interface:
+`(input: Input, context: Context.Context<never>) => void`, and
+`currentTimeNanosUnsafe(): bigint` is a member of `Clock` in `dist/Clock.d.ts`.
 
 | Effect 3 | Effect 4 | Where |
 | -- | -- | -- |
@@ -111,19 +113,21 @@ result equals v3's (the default set in both is the console logger plus the
 tracer logger). v4 no longer logs a fiber that ends with an unhandled error,
 so the parent's reason, not reporting a handled lane failure twice, no longer
 applies. The layer now only keeps explicit `Effect.log*` calls off the
-console. Tests prove no `console.*` call for an `Effect.log*` call and for a
-failing `runtime.runFork`, and that the log is an event on the exported span.
+console. The spike's smoke tests prove no `console.*` call for an
+`Effect.log*` call and for a failing `runtime.runFork` that logs, and that
+the log is an event on the exported span.
 
-**G2. `Queue.takeUpTo` is gone, and `Queue.takeAll` now blocks while empty.**
+**G2. `Queue.takeUpTo` is gone, and `Queue.takeAll` waits while empty.**
 `dist/Queue.d.ts` documents `takeAll` as "Takes all currently available
 messages, waiting until at least one message is available when the queue is
-empty" and types it `Effect<Arr.NonEmptyArray<A>, E>`.
-never block: the pump already waits on the wake latch. Read
-`Queue.sizeUnsafe(traceQ)`, then take `min(size, room)`
+empty" and "Returns a non-empty array", typed `Effect<Arr.NonEmptyArray<A>, E>`.
+`takeBatch` in `publish-spine.ts` must never wait: the pump already waits on
+the wake latch. Read `Queue.sizeUnsafe(traceQ)`, then take `min(size, room)`
 frames with `Queue.takeUnsafe`. The producer is synchronous and the pump is
-the only consumer, so every take finds a frame; a missing frame is a defect,
-not a skip. Tests enqueue more than `PUBLISH_BATCH_MAX` trace frames with
-`enqueueTrace` and assert batch sizes `[256, n]`, and drain an empty spine.
+the only consumer, so every take finds a frame; a missing frame is
+`Effect.die`, not a skip. The spike enqueues `PUBLISH_BATCH_MAX + 3` frames
+with `enqueueTrace` and asserts batch sizes `[256, 3]`, and drains an empty
+spine.
 
 Separately, v4 `Queue.offerUnsafe` on a full sliding queue now evicts the
 oldest message; v3's rejected the newest. The trace lane already uses the
@@ -147,13 +151,15 @@ Effect 4 augments the global `Error` interface from `ErrorReporter.d.ts` and
 `Runtime.d.ts`. The containment walk in `export-surface.test.ts` reaches
 those augmentations through `Error` and reports four effect files, although
 compass-agent exports no effect type. The walk skips only the global `Error`
-interface declarations in those two files, and asserts each skipped
-declaration's exact shape: `ErrorReporter.d.ts` extends `Reportable` with no
-members, and `Runtime.d.ts` declares only `[errorExitCode]` and
-`[errorReported]`. A new member or base on either one changes the shape and
-fails the test. Any other global augmentation is walked like any other
-declaration. The test still fails when a transport export names an effect
-type; the PR shows each case by mutation checks.
+interface declarations in those two files. It asserts each skipped
+declaration's full member text, base members included:
+`ErrorReporter.d.ts` extends `Reportable` (`[ignore]?: boolean`,
+`[severity]?: Severity`, `[attributes]?: ReadonlyRecord<string, unknown>`)
+and adds nothing; `Runtime.d.ts` declares only `[errorExitCode]?: number` and
+`[errorReported]?: boolean`. A new member, a changed member type, or a
+changed base fails the test. Any other global augmentation is walked like any
+other declaration. The test still fails when a transport export names an
+effect type; the spike shows each case by mutation checks.
 
 ## Alternatives considered
 
@@ -190,20 +196,22 @@ Red→green:
 
 - `compass-agent:typecheck`: 0 errors (196 on #2163 today).
 - `compass-agent:test`: all pass. A local spike at compass `main` `33db6167`
-  passed 864 of 864 with the map above, before the G1, G2 and dispose tests
-  named here were added.
+  with every change in this record passes 868 of 868.
 - G1: no `console.*` call for an `Effect.log*` call and for a failing
-  `runtime.runFork`; the log appears as a span event.
-- G2: a trace-lane drain above `PUBLISH_BATCH_MAX` gives `[256, n]`; a mutant
-  that drops the `min` turns it red. An empty spine drains without publishing.
+  `runtime.runFork` that logs; the log appears as a span event. A mutant with
+  a console logger turns it red.
+- G2: a trace-lane drain of `PUBLISH_BATCH_MAX + 3` frames gives `[256, 3]`;
+  a mutant that drops the `min` turns it red. An empty spine drains without
+  publishing.
 - G3: the `TestClock` retry test pins delays and the attempt count, and
   `durableRetryDelay(5)` dies; a mutant that returns a zero delay turns it red.
 - Refusal drain: a resumed session with an interrupted turn and an
   unresolved pinned model commits the abort frame before `transport.close()`;
   a mutant that removes the drain turns it red.
 - Export surface: a mutation that re-exports `DURABLE_RETRY_SCHEDULE` from
-  `src/index.ts` turns the test red, and so does adding an effect-typed
-  member to either skipped `Error` declaration.
+  `src/index.ts` turns the test red, and so does an effect-typed member added
+  to, or replacing a member of, either skipped `Error` declaration or
+  `Reportable`.
 
 ### E2: close the Renovate PRs
 
