@@ -34,7 +34,11 @@
 		}
 	],
 	"ignore": [],
-	"carveOutPaths": ["ref-gate.config.json", "bun.lock"],
+	"carveOutPaths": [
+		"ref-gate.config.json",
+		"bun.lock",
+		"site/scripts/ref-gate-config.test.ts"
+	],
 	"carveOutPrefixes": [],
 	"allowlist": {},
 	"remediationDoc": "README.md"
