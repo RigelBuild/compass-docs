@@ -187,14 +187,13 @@ the leg; a re-run clears it. If that proves frequent, the Woodpecker fallback
 
 ### E-D3 — Woodpecker on compass as the documented fallback (F3)
 
-If hosted-runner KVM proves unreliable in practice — frequent reds from
-withheld `/dev/kvm`, or GitHub tightening access — the fallback is to **enroll
-the compass repo itself on the self-hosted Woodpecker fleet** and run the KVM
-leg there. This is explicitly *compass's own* CI, not the managed service's:
-compass features are tested in compass. The fleet has a registered self-hosted
-Linux CI agent (x86_64, KVM-capable, docker backend) already, so the hardware
-is in place; what is missing is a compass pipeline (no `.woodpecker*` config
-exists in this repo — verified). The step shape:
+If hosted-runner KVM proves unreliable in practice — for example, if `/dev/kvm`
+is withheld — the fallback is a self-hosted Linux CI runner that supports KVM
+device access. The public contract is the test step below; runner provisioning
+and repository enrollment are outside this record.
+> Redacted 2026-10-17: private runner inventory, CI backend and trust posture, and service rollout details removed from the public record.
+
+The step shape:
 
 ```yaml
 microvm-tests:
@@ -208,20 +207,13 @@ microvm-tests:
     - cd go && go test -tags microvm -race ./...
 ```
 
-The fleet runs the docker backend (confirmed) with the repo marked *trusted*,
-so the per-step `devices: [/dev/kvm]` mapping grants exactly that one device —
-never `privileged: true`. The contract this fallback fixes is: the step grants
-`/dev/kvm` (and only `/dev/kvm` — `/dev/vhost-vsock` is not needed, per E-D1),
-sets `COMPASS_REQUIRE_MICROVM=1` so skips fail loudly, and realizes the
-guest-image derivations from the binary cache before the test run. This is the
-same env + tag contract E-D2's GHA step uses, so adopting the fallback is a
-lane swap, not a redesign. It also realizes V8's "CI job (KVM-labeled runner)"
-(`microvm-runner.md:606-608`).
-
-*Separate concern — the managed service:* KVM CI for the managed service is a
-managed-plane concern, out of scope here. It is deferred to the
-control-plane work (the fleet control plane, RIG-2485), not this record —
-this record keeps compass's own tests in compass.
+The runner must support per-step device mapping. The job grants only `/dev/kvm`
+(not `/dev/vhost-vsock`, per E-D1), never `privileged: true`; it sets
+`COMPASS_REQUIRE_MICROVM=1` so skips fail loudly, and realizes guest-image
+derivations from the binary cache before testing. This matches E-D2's env and
+tag contract, so adopting the fallback is a lane swap, not a redesign. It also
+realizes V8's "CI job (KVM-labeled runner)" (`microvm-runner.md:606-608`).
+> Redacted 2026-10-17: managed-service CI fallback and rollout details removed from the public record.
 
 ### E-D4 — guest image: derivations beside the agent image, kernel from nixpkgs, a project binary cache (F4)
 

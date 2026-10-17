@@ -389,7 +389,7 @@ demand via cloud-hypervisor hotplug rather than reserving peak RAM (D5).
   boot a session from a **box-independent** durable volume (network-attached or
   rehydrated from object storage, not local-disk-only) and to support
   suspend-to-durable. The scheduling, idle detection, and durable-storage
-  mechanism are the control plane's (RIG-2485); this backend owns only the
+  mechanism are the control plane's (managed-plane); this backend owns only the
   boot-from-anywhere + suspend contract.
 - **Rootless is hard.** No daemon, no root, no rootful fallback
   (`podman.go:22-24`). The VMM, virtiofsd, and every backend process run as
@@ -778,9 +778,9 @@ each is kept so the executor sees *why*, not just *what*.
    orchestration is a separate control plane. This is settled — do not
    reopen.** The Runner runs *on the same physical box* as the microVMs it
    manages (a node-agent, kubelet-style), managing only that box's local VMs.
-   A separate managed **control plane** provisions boxes on the hyperscaler
-   and schedules sessions onto per-box Runners. This is decided for three
-   reasons, each of which would otherwise resurface as the same question:
+   A separate control plane provisions boxes and schedules sessions onto
+   per-box Runners. This is decided for three reasons, each of which would
+   otherwise resurface as the same question:
    - **vsock is host-local by construction.** The agent↔Runner transport
      (Approach (b)) is virtio-vsock, which only connects a guest to the VMM on
      *its own* host. A central/remote Runner managing VMs across boxes cannot
@@ -805,14 +805,13 @@ each is kept so the executor sees *why*, not just *what*.
      co-location already makes local. The transport-consolidation
      record stands.
 
-   **Out of scope for this record (own design when the managed service is
-   built):** the control plane's box provisioning + session scheduling, the
-   Runner→Server telemetry fan-in, and any message-bus adoption (NATS/JetStream
-   is a candidate for that *trusted* control-plane tier — Runner→Server fan-in,
-   durable session-log, inter-Runner scheduling — but is a **bad** fit for the
-   untrusted agent↔Runner hop and is not adopted here). This record is scoped
-   to the per-box microVM backend only. The control plane is tracked as
-   **RIG-2485** (Backlog), to be designed when the managed service is built.
+   **Out of scope for this record:** fleet box provisioning and session
+   scheduling, the Runner→Server telemetry fan-in, and any message-bus adoption.
+   NATS/JetStream may fit a trusted orchestration tier for Runner→Server fan-in,
+   durable session logs, or inter-Runner scheduling, but is a **bad** fit for
+   the untrusted agent↔Runner hop and is not adopted here. This record is scoped
+   to the per-box microVM backend only.
+   > Redacted 2026-10-17: managed fleet control-plane roadmap and service-specific rollout details removed from the public record.
 9. **D9 — sessions are not sticky to a box beyond the warm path; a woken
    session reschedules onto any available Runner.** D8 co-locates the Runner
    with the VMs it manages, which raises a hyperscaler idle-scaledown wrinkle:
@@ -839,7 +838,7 @@ each is kept so the executor sees *why*, not just *what*.
    obligations carry **no new V-task** here — they are exercised by the
    parent's P2 volume-lifecycle work and the D5→C3 suspend/resume machinery
    once it lands; V6's isolation suite verifies the backend boots from the
-   box-independent volume path it is handed. **Out of scope (RIG-2485):** the
+   box-independent volume path it is handed. **Out of scope (managed-plane):** the
    scheduling that picks a Runner, idle detection + box drain/deprovision,
    on-demand reprovision on wake, any warm-affinity optimization, and the
    durable-storage mechanism (network-attached vs object-store) — which **MUST**

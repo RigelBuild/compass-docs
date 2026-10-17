@@ -18,12 +18,12 @@ Composes with the RIG-1715 gateway record
 (`docs/designs/platform/compass-server-llm-gateway/design.md`), the
 RIG-2936 per-Manager profile record
 (`docs/designs/agent/compass-per-agent-overrides/design.md`), the
-config-delivery record
-(`docs/designs/agent/compass-agent-config-delivery/design.md`, DL-078),
+config-delivery record (`docs/designs/agent/compass-agent-config-delivery/design.md`, DL-078),
 and the config-passthrough record
-(`docs/designs/agent/compass-agent-config-passthrough/design.md`);
-consumes the RIG-2562 model evaluations (in design in the internal
-fleet-tooling repo) as evidence, not as a blocker.
+(`docs/designs/agent/compass-agent-config-passthrough/design.md`).
+The record recommends stable names by role and can be updated without blocking
+on a later evidence refresh.
+> Redacted 2026-10-17: private evaluation source and design-location details removed from the public record.
 
 ## Problem / Intent
 
@@ -298,22 +298,11 @@ RIG-2936/passthrough surfaces.
 
 This record owns the day-1 stable-name registry entries (SEEDED into the
 Server registry store via the P2 operator write RPC) + a docs page
-"recommended model per role per provider you hold"; the `default`
-profile's own model selections are RIG-2936's default-profile content,
-not this record's. The RIG-2562 model evaluations (per-role
-external-first composite scoring, designed in the internal fleet-tooling
-repo) supply the EVIDENCE that picks the recommended values. Until its
-numbers land, recommendations are seeded from the fleet's current
-practice (the same practice OMP's `priority.json:24-48` `slow` chain
-encodes: codex-tier first, then opus-tier). Consuming RIG-2562 output is
-a registry write via the same operator RPC — a data update, never a
-schema or code change.
-
-The fleet model-selection spec (RIG-2573/DL-025, `docs/specs/platform/
-model-selection.md`) is **absent in this repo** — `docs/specs/` contains only
-`product/` and `brand/` (verified by glob this session); it lives in the
-internal fleet-tooling repo. Defaults MUST cite its optimization target
-conceptually when the docs deliverable is written.
+"recommended model per role per provider you hold"; the `default` profile's
+own model selections are RIG-2936's default-profile content.
+Registry defaults are set by role and updated through the same operator RPC;
+the schema and code do not change for data refreshes.
+> Redacted 2026-10-17: private evaluation implementation, source path, model-priority configuration, and missing-spec details removed from the public record.
 
 ## Alternatives considered
 
@@ -617,23 +606,16 @@ Interfaces:
 
 Owner: compass-obs.
 
-Seed the day-1 stable-name registry entries covering the gateway
-record's day-1
-providers ("anthropic (OAuth + api_key), openai/openai-codex
-(OAuth + api_key), google (api_key)",
-`compass-server-llm-gateway/design.md:719-720`) plus OpenRouter/Bedrock
-alternate candidates — written into the Server registry store via P2's
-operator RPC.
-Write the docs page "recommended model per role per provider you hold",
-forward-referencing the RIG-2562 model evaluations as the evidence source
-and citing the fleet model-selection spec's optimization target (the spec
-lives in the internal fleet-tooling repo — cite conceptually, do not link
-the private repo from this public one).
-
+Seed the day-1 stable-name registry entries from the gateway record's public
+provider support, with OpenRouter/Bedrock alternate candidates. Store them in
+the Server registry through P2's operator RPC. Write the docs page
+"recommended model per role per provider you hold" using public role-level
+rationale. Refresh registry values through P2's operator RPC.
+> Redacted 2026-10-17: private model-selection evidence source, provider-priority recommendation inputs, and spec location removed from the public record.
 Interfaces:
 
-- Consumes: RIG-2562 per-role recommendations (when published); the P2
-  registry schema + operator write RPC.
+- Consumes: public role-level recommendations when available; the P2 registry
+  schema and operator write RPC.
 - Produces: seeded registry defaults in the Server store + `docs/` page;
   a data-refresh runbook line (updating defaults is an operator registry
   write via P2's RPC, not a release).
@@ -673,17 +655,13 @@ Interfaces:
    **Recommendation:** bare, matching the gateway-record example
    verbatim; the unknown-name pass-through disambiguates collisions with
    concrete `provider/id` selectors since those always contain a `/`.
-2. **(Non-load-bearing) Interim defaults before RIG-2562.** Seed from
-   fleet-current practice (P5) vs wait for eval numbers.
-   **Recommendation:** seed now; RIG-2562 output is a data update by
-   construction.
-3. **(Non-load-bearing) Model-selection spec location.**
-   `docs/specs/platform/model-selection.md` does not exist in the
-   compass repo (verified: `docs/specs/` holds only `product/` +
-   `brand/`); it lives in the internal fleet-tooling repo
-   (RIG-2573/DL-025). **Recommendation:** cite its optimization target
-   conceptually in P5's docs page; do not link the private repo from
-   this public one.
+2. **(Non-load-bearing) Interim defaults.** Seed from current role-based
+   practice or wait for evaluated values. **Recommendation:** seed now; later
+   evidence can update values without changing the registry schema.
+3. **(Non-load-bearing) Model-selection evidence.** Recommendations must rest
+   on public selection criteria. **Recommendation:** keep the docs page limited
+   to rationale that can be stated without private evaluation materials.
+   > Redacted 2026-10-17: private model-selection spec location and citation details removed from the public record.
 
 ## Resolved decisions
 

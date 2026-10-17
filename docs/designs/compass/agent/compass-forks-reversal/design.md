@@ -85,8 +85,8 @@ the fork's CLI is also invoked raw (`nix run path:../forks/<fork>#…`) in the
 raw-CLI call sites (six files, incl. `tools/agent-image-env-gate/index.ts`) that
 bypass the lock (see L1/L2 Interfaces). Today a single `path:` tree
 makes CLI-rev == module-rev by construction (`devenv.nix:457-460` names exactly
-this as the reason for the pin shape). The flake-input side follows the internal
-monorepo's default — `github:RigelBuild/<fork>` pinned via `devenv.lock` —
+this as the reason for the pin shape). The flake-input side follows the standard
+fork-consumer shape — `github:RigelBuild/<fork>` pinned via `devenv.lock` —
 but the six raw-CLI sites bypass that lock, so the reversal MUST separately
 preserve the CLI-rev == module-rev identity: the recommended shape is a tiny
 compass-side flake re-exporting the locked inputs so every consumer resolves one
@@ -199,8 +199,8 @@ consuming that rev restores the fix by construction — compass never re-patches
 it.
 
 **Landing sequence — cleared.** The shared nix-DB-drop fix landed on
-`RigelBuild/nix2container` (rev `8f4a6fd7`, **merged 2026-08-19**); the internal
-monorepo deleted its own vendored `nix2container` subtree and now consumes the
+`RigelBuild/nix2container` (rev `8f4a6fd7`, **merged 2026-08-19**); other
+consumers can now drop vendored `nix2container` subtrees and consume the
 fork via a rev-pinned `github:` input. The external RIG-2332 block (the sole
 arm64 image-builder was
 down) is therefore **resolved** — the fork content is live on
@@ -244,7 +244,7 @@ the generator — should read the npm-installed schema the agent actually runs
 (`packages/compass-agent/node_modules/@oh-my-pi/pi-coding-agent/src/config/settings-schema.ts`, pinned
 at `packages/compass-agent/package.json:19`), so the denylist tracks the version
 in production rather than a vendored snapshot. The deltas catalogued in
-`forks/README.md:156-197` live in the monorepo fork and are
+`forks/README.md:156-197` live in the `RigelBuild/oh-my-pi` fork and are
 `RigelBuild/oh-my-pi`'s concern, not compass's. Drop-vs-consume is a
 load-bearing Open Question (OQ1) — but the one real consumer wanting the npm
 schema *strengthens* drop; consuming `github:RigelBuild/oh-my-pi` would only be
@@ -268,17 +268,15 @@ this record does not require it.
 
 ## Alternatives considered
 
-- **Compass-own fork repos** (`RigelBuild/compass-devenv` etc., or reviving the
-  per-upstream Copybara spoke repos) — rejected. Matt ruled shared canonical
-  repos: one fork per upstream, patch work combined. Two forks of the same
-  upstream would duplicate the patch work and re-create the divergence this
-  reversal exists to end. Matt's ruling; not relitigated here.
-- **Defer until the fleet's reversal fully lands** — rejected. Only
-  the nix2container lane has a genuine cross-repo dependency (the shared
-  nix-DB-drop fix); serializing the whole reversal behind that completion keeps
-  7424 vendored files (and
-  their machinery) in compass longer for no correctness gain. Lanes here
-  sequence on their actual prerequisites only.
+- **Compass-own fork repos** or per-upstream Copybara spokes — rejected. Matt
+  ruled shared canonical repos: one fork per upstream, with patch work combined.
+  Two forks of one upstream would duplicate patches and recreate the divergence
+  this reversal is meant to end.
+- **Defer until the reversal can proceed as one coordinated change** — rejected.
+  One lane has a shared compatibility prerequisite; the other lanes can sequence
+  independently. Waiting for every prerequisite would leave vendored files and
+  their maintenance machinery in Compass longer without a correctness benefit.
+> Redacted 2026-10-17: private workstream dependencies, vendored-file counts, and implementation sequencing details removed from the public record.
 
 ## Plan
 
