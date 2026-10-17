@@ -1,5 +1,7 @@
 # Time out pending workflows no agent takes (RIG-5475)
 
+Errata: E1, E2, E3 (2026-10-17) — see §Errata
+
 ## Decisions
 
 Matt ruled on RIG-5485 (2026-10-16). D1–D5 record the ruling.
@@ -354,3 +356,35 @@ func anyAgentTakes(filters []scheduler.FilterFn, task *model.Task) bool
 - [ ] `make lint` and `make test-server` pass.
 - [ ] After deploy, within one reaper interval: the `type=linux` pipelines end
       `error`, their required check posts failure, and the counter rises.
+
+## Errata
+
+### E1 — 2026-10-17 (RIG-5475)
+
+Wrong: § "Dependents that can never run" says a dead workflow ends `skipped`
+for every dependency state, and § "Finalizing a timed-out workflow" lists the
+log reasons as `pending-timeout` or `dependency-failed`.
+
+A dependent whose blocking dependency workflow was deleted ends `error`, with
+`Error` set to `dependency workflow <id> no longer exists`, and logs
+`reason=dependency-deleted`. A `skipped` dependent rolls up as success, so a
+deleted dependency would otherwise turn the pipeline check green.
+
+### E2 — 2026-10-17 (RIG-5475)
+
+Wrong: the clock in § "When a queued workflow times out" uses each
+dependency's `Finished` as stored.
+
+A terminal dependency stored with `Finished` `0`, such as one skipped without
+starting, first gets `Finished` set to the time the reaper sees it. Without
+this, the clock falls back to `pipeline.Created`, and the dependent could time
+out one pass after it becomes runnable.
+
+### E3 — 2026-10-17 (RIG-5475)
+
+Wrong: *Matching against live agents* rebuilds every agent with
+`hostname="*"` and matches tasks with it.
+
+A real agent polls with its own hostname. So a task that sets `hostname=*`
+matches an agent only when that agent's custom labels or server filters set
+`hostname=*`. A concrete `hostname` value still never times out.
