@@ -129,8 +129,15 @@ Subagents edit files only. The Manager commits their work with
 `vcs_commit {workspace}`, run in that workspace's root.
 
 **D2 — PR writes through Server arms.** `createPullRequest` in
-`go/server/forge.go` calls `rf.author.CreatePullRequest` before
-`recordPullRequest`, so a failed record leaves a PR with no ownership row.
+`go/server/forge.go` creates on the forge first, then records:
+
+```go
+pr, err := rf.author.CreatePullRequest(ctx, req.GetRepo(), forge.CreatePR{
+// ...
+if fe := s.recordPullRequest(ctx, rf, id, caller, sessionID, call.GetClientRequestId(), req.GetRepo(), pr, wire, link); fe != nil {
+```
+
+So a failed record leaves a PR with no ownership row.
 `submit_stack` (field 17) takes entries bottom to top. Per entry:
 
 1. Find the PR by head in any state, open first. The repo squash-merges and
@@ -172,9 +179,18 @@ block, and keeps every other byte. Any other foreign write is refused, as is
 every write to an unrecorded PR the caller cannot adopt.
 
 `vcs_retire` closes through `transition_pull_request_state`.
-`transitionPullRequestState` checks only `requireForgeScope`; T5 adds a
-refusal when the PR's ownership row names another agent. A PR with no row,
-such as a jj-vine PR under OQ-5(a), still closes as today.
+`transitionPullRequestState` goes from scope check to forge call with no
+authorship check:
+
+```go
+if fe := s.requireForgeScope(ctx, caller, rf, req.GetRepo()); fe != nil {
+// ...
+pr, err := rf.author.TransitionPullRequestState(ctx, req.GetRepo(), req.GetPrNumber(), forge.TransitionState{State: req.GetState()})
+```
+
+T5 makes close fail closed: it runs only when an ownership row names the
+caller. A PR with no row, such as a jj-vine PR under OQ-5(a), is refused;
+during coexistence its author closes it outside the tools.
 
 **D3 — issue and text.** Each PR names its own issue: #2334
 ("Refs RIG-5511") stacks on #2333 (RIG-5510). `vcs_submit` takes a
@@ -239,11 +255,14 @@ FindPullRequestByHead(ctx context.Context, repo, headRef string) (PullRequest, b
 
 GitHub PATCHes `/repos/{repo}/pulls/{n}`; `Ready` runs GraphQL
 `markPullRequestReadyForReview` with a new `NodeID` (`json:"node_id"`) on
-`ghPullDetail`. `ghPullDetail.Base` gains `Repo.FullName`
-(`json:"full_name"`), surfaced as `PullRequest.RepoFullName`. Lookup:
+`ghPullDetail`. Both `ghPull` (the create response, whose `Base` holds only
+`Ref` today) and `ghPullDetail` gain `Base.Repo.FullName`
+(`json:"full_name"`), surfaced as `PullRequest.RepoFullName`, so a create
+records the canonical name with no extra read. Lookup:
 `GET /repos/{repo}/pulls?state=all&head=<owner>:<ref>`; merged means
 non-null `merged_at`. Linear returns `ErrUnsupported`. Red → green
-(`httptest`): PATCH body, ready, hit, miss, merged, `full_name`, 422, Linear.
+(`httptest`): PATCH body, ready, hit, miss, merged, `full_name` on create
+and on read, 422, Linear.
 
 ### T2 — stack block
 
@@ -363,8 +382,8 @@ authorship refusal. Red → green (`FakeProvider`):
 - Under OQ-6(b), a same-owner foreign body changes only inside the block; a
   foreign title, base, draft, or `replace_text` write and a different-owner
   foreign PR are refused.
-- A same-scope close of a PR another agent authored is refused with no
-  provider call; a PR with no row closes.
+- A same-scope close of a PR another agent authored, and of a PR with no
+  row, is refused with no provider call; the author's own close runs.
 
 ### T6 — jj runner and local tools
 
@@ -400,12 +419,15 @@ the rebase; a foreign base is never a rebase source; a conflict is reported.
 
 `vcs_submit` syncs, checks, runs `jj git push --remote origin -b <own>…`,
 then `submit_stack` (`ready_head_ref` = tip on `ready`); it refuses trunk.
-`vcs_retire` refuses a foreign PR, closes it through
-`transition_pull_request_state`, then `jj bookmark delete` and
-`jj git push --remote origin -b <name>`. `packages/compass-agent/src/cli.ts`
-adds the tools to `nativeTools`. Red → green: each D4 refusal and a missing
-issue fail before push; push precedes the broker call; `vcs_retire` pushes
-one ref.
+`vcs_retire` refuses a PR it did not author, closes it through
+`transition_pull_request_state`, then runs `jj bookmark delete <name>`,
+`jj git push --deleted --dry-run --remote origin`, and checks that the plan
+deletes exactly `<name>` before `jj git push --deleted --remote origin`.
+(`-b <name>` does not push a deleted bookmark.)
+`packages/compass-agent/src/cli.ts` adds the tools to `nativeTools`.
+Red → green: each D4 refusal and a missing issue fail before push; push
+precedes the broker call; `vcs_retire` deletes exactly one remote ref, and
+refuses when the dry run lists any other bookmark.
 
 ### T8 — prompt, skill, and DL-558
 
