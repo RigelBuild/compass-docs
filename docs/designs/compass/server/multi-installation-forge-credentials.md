@@ -151,8 +151,10 @@ cache, singleflight, refresh and revoke stay per key. Only the agent-level maps 
   that key is inside B's current group.
 - `grantsChanged` keeps a served key only if it is inside the new group for its own owner. Every
   other path is unchanged: generation, signal and `queueRevoke`.
-- `ResolveFor` appends one `ResolvedSecret` per credential. Each carries the new `Owner` field,
-  and the `*` group carries `*`. The **default credential** is the `*` group, else the group on
+- `ResolveFor` appends one `ResolvedSecret` per credential. Each carries the new `Owner` field, an
+  account login. The `*` group carries the default installation's login from
+  `InstallationResolver.DefaultOwner`; `*` stays internal to grouping, caching and the mint. The
+  **default credential** is the `*` group, else the group on
   `DefaultInstallation()`, else the first group by owner. Under OQ-4 (a) it is appended last.
 
 Each owner costs one mint per refresh. A 20-owner agent adds 20 mints per hour, which fits the
@@ -371,6 +373,7 @@ DeliveryFile, Host, Owner}` per credential. Tests (`go/server/git_credential_tes
 - A mint failure for B falls back only to B's last key.
 - Revoking B's last repository revokes B's token and keeps A's.
 - The default credential is emitted last.
+- A `*` credential carries the default installation's login in `Owner`, never `*`.
 - Under OQ-1 (b): an owner `*` plus an agent row under B serves `*` and B; `*` plus a row under
   the default owner mints only `*`.
 - A single-owner agent emits exactly today's one secret, with `Owner` set.
