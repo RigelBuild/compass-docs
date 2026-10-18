@@ -3,73 +3,27 @@
 Tracking: RIG-5653 (work; parent RIG-4898). Ruling: Matt, 2026-10-17, on RIG-4898: "we need to
 support multiple installs in the product."
 
-Length: the record is about 3,150 prose words. The excess over the 2,500-word target sits in
-Open Questions, which shrinks to a short Resolved decisions section once Matt rules.
+## Resolved decisions
 
-## Open Questions
+Matt ruled on RIG-5672, 2026-10-18.
 
-1. **OQ-1. What does a wildcard grant cover?** compass#2385 mints `*` on the default installation
-   and rejects a `*` agent's grant under any other owner. That check runs only in
-   `AgentRepositoryService`. Seeded `ScopeGrants` and an owner's later `*` grant bypass it, and
-   `gitCredentialScope` lets a `*` anywhere in the union hide every exact grant. So an agent that
-   holds `B/two` loses B silently when its owner later gains `*`.
-   - (a) Keep #2385's rule. A `*` in the union collapses to one `*` group, and the hole above stays.
-   - (b) `*` covers the default installation. Exact grants under other owners keep their own owner
-     groups, and `checkOrg` drops the wildcard rule.
-   - (c) `*` mints on every installation, which means one token per installation on every refresh.
-
-   **Recommendation:** (b). It closes the hole, and it costs one installation comparison per
-   exact owner in T4. It changes the wildcard sentence that #2385 put in `docs/self-host.md`.
-2. **OQ-2. What does "create and edit an issue" on the second owner mean?** The brokered token has
-   no `issues: write` (DL-442 OQ-10), so `gh issue create` fails on every owner today.
-   - (a) Issues go through the forge tools (`forge_create_issue`, `forge_comment_on_issue`,
-     `forge_transition_issue_state`) on the owner's installation (T5). No permission change.
-   - (b) Add `issues: write` to the brokered token so `gh issue create` and `gh issue edit` work.
-     Those writes carry no Compass attribution stamp or ownership row.
-   - (c) Do (a) and add a `forge_edit_issue` tool for title and body edits. This is a new tool
-     contract.
-
-   **Recommendation:** (a), which **narrows the RIG-5653 goal**. "Create and edit issues" becomes
-   create, comment and open or close; no title or body edit. Ruling (a) accepts that narrower
-   goal. Keeping the goal as written means (c).
-3. **OQ-3. Are subscriptions and reviews on a second-owner repository in scope?** The notify lane
-   polls with the default installation's client, so `forge_subscribe` on such a repository never
-   notifies. The reviewer App is bound to the default installation, so `forge_submit_review`
-   there fails.
-   - (a) Both arms return an explicit in-band error for such a repository (T5). Notify and the
-     reviewer get a follow-up issue.
-   - (b) Route the notify lane's reads through the T5 router in this issue. Reviews still fail.
-
-   **Recommendation:** (a). The proof does not need either. The notify lane shares the RIG-2991
-   rate gate, which T5 leaves alone.
-4. **OQ-4. How does the default credential reach `hosts.yml` while runners are mixed?** Mixed-owner
-   grant sets exist today. `ListForgeScopeRepos` unions the owner's grants with the agent's rows,
-   and seeded `ScopeGrants` bypass `checkOrg`. So T4 changes the wire as soon as the server
-   deploys. Runners deploy separately, and a runner without T3 writes the last `SecretGH` per host
-   into `hosts.yml`.
-   - (a) Emit the default credential last, and keep `GHHostsScript` last-wins. Old and new runners
-     both put the default credential in `hosts.yml`. This is never worse than today's token, except
-     in one case: the owner's own grants sit on a non-default installation while agent rows sit on
-     the default one.
-   - (b) Mark the default credential explicitly on the wire. Old runners ignore the mark, so (b)
-     still needs (a)'s order.
-   - (c) The runner's secret fetch declares that it reads `owner`, and the server sends old runners
-     today's single secret. This closes every case, but it adds a capability field to the fetch.
-
-   **Recommendation:** (a). It needs no new field and no test churn, and it leaves the one gap
-   above. Depends on OQ-1: under (b) there, the `*` group is the default credential.
-5. **OQ-5. Does gh get per-owner tokens in this issue?** Nothing on the proof path runs gh. PRs go
-   through jj-vine, and issues go through the forge tools (OQ-2). A `gh` wrapper must infer the
-   owner from `-R`, `GH_REPO`, `gh api repos/…` or the working directory's remote. It misses
-   positional repositories, URL arguments, GraphQL variables and directories outside a checkout. A
-   checkout's devenv that ships gh would also shadow it on `PATH`.
-   - (a) Ship the wrapper in T3 (the `gh` subcommand in T3's Interfaces).
-   - (b) Ship only `compass-forge-credential token --repo`, so an agent runs
-     `GH_TOKEN="$(compass-forge-credential token --host github.com --repo owner/name)" gh …`. The
-     wrapper becomes a follow-up issue with its own review.
-
-   **Recommendation:** (b). It keeps the largest heuristic surface out of an issue whose proof
-   never exercises it, and plain gh keeps today's default-token behaviour.
+1. **OQ-1, wildcard scope: (b).** A `*` grant covers the default installation. Exact grants under
+   other owners keep their own owner groups. `checkOrg` drops the wildcard rule from compass#2385,
+   so a `*` agent can also hold `B/two`.
+2. **OQ-2, issue edits: (c).** Issues go through the forge tools on the owner's installation, and a
+   new `forge_edit_issue` tool edits title and body (DL-582). The brokered token keeps its
+   permissions, so `gh issue create` and `gh issue edit` still fail. Matt asked whether an edit
+   tool exists already. It does not. The issue tools are `forge_create_issue`,
+   `forge_comment_on_issue` and `forge_transition_issue_state`, which only opens or closes.
+   `Provider.EditComment` edits comments, not issues, and no tool exposes it.
+3. **OQ-3, subscriptions and reviews: every installation.** "Everything needs to be supported on
+   all installs." Board ingestion, the notify lane and the reviewer leg route by owner like the
+   author leg (DL-564).
+4. **OQ-4, mixed runners: none.** Server and runners cut over together, and dev can be wiped. The
+   default credential is still emitted last, because `GHHostsScript` is last-wins and needs no
+   change.
+5. **OQ-5, gh: (b).** Only `compass-forge-credential token --repo` ships. The gh wrapper is
+   RIG-5819.
 
 ## Problem / Intent
 
@@ -138,9 +92,8 @@ cache, singleflight, refresh and revoke stay per key. Only the agent-level maps 
 - `gitCredentialScope` becomes `gitCredentialScopes`. It returns one group per owner, sorted by
   owner, plus a `*` group when the union holds `*`. The only invalid input left is a malformed
   grant: not `*` and not exactly `owner/name`.
-- Under OQ-1 (b), `credentials` drops an exact group whose owner resolves to
-  `DefaultInstallation()` while a `*` group exists, because `*` already covers it. Under (a), a `*`
-  collapses the union to the `*` group, as today.
+- `credentials` drops an exact group whose owner resolves to `DefaultInstallation()` while a `*`
+  group exists, because `*` already covers it (OQ-1 (b)).
 - The 500-repository cap (`gitCredentialMaxRepos`) applies per group, because GitHub's limit is
   per token.
 - `credentials` serves each group independently. When owner X's group is rejected, it retries
@@ -155,7 +108,8 @@ cache, singleflight, refresh and revoke stay per key. Only the agent-level maps 
   account login. The `*` group carries the default installation's login from
   `InstallationResolver.DefaultOwner`; `*` stays internal to grouping, caching and the mint. The
   **default credential** is the `*` group, else the group on
-  `DefaultInstallation()`, else the first group by owner. Under OQ-4 (a) it is appended last.
+  `DefaultInstallation()`, else the first group by owner. It is appended last, so last-wins
+  `GHHostsScript` puts it in `hosts.yml`.
 
 Each owner costs one mint per refresh. A 20-owner agent adds 20 mints per hour, which fits the
 shared limiter.
@@ -198,14 +152,14 @@ The helper is Go because the runner's writer and the helper's reader share one l
 every fetch and push, so a static binary also avoids starting the agent's bun bundle each time.
 The repository bars real logic in shell scripts, and a Go binary keeps the image free of it.
 
-### Forge writes
+### Forge calls
 
-The GitHub author leg becomes a `forge.Provider` that routes each call by repository owner
-(DL-564). Every `Provider` method that touches the network takes `repo`, so the router is a
-drop-in `rf.author`.
+Every forge call routes by repository owner (DL-564). A router implements `forge.Provider` and
+the read interfaces the board and notify lanes use. Every one of those methods takes `repo`, so the
+router is a drop-in for the shared `*forge.GitHub`.
 
 - The default installation uses the existing shared primary client. Board, notify and author
-  writes on that installation keep one RIG-2991 rate gate.
+  calls on that installation keep one RIG-2991 rate gate.
 - Another installation gets its own `NewAppTokenSource` and `NewGitHub`, built on first use and
   cached by installation id. Each has its own rate gate, because GitHub budgets per installation.
 - `Name`, `BodyLimit` and `AppLogin` delegate to the primary client. The App's bot login is the
@@ -215,16 +169,30 @@ drop-in `rf.author`.
   as a 403 or 404. Budget exhaustion becomes resource-exhausted, an App credential failure becomes
   internal, and any other lookup failure becomes unavailable. A transient lookup failure never
   reads as "not found".
-- The reviewer leg, board ingestion, webhooks and the notify lane stay on `--forge-installation-id`.
-  Under OQ-3 (a), `forge_subscribe` and `forge_submit_review` check the owner after the scope
-  check. On a non-default installation they return a failed-precondition result that names the
-  limit. The scope check runs first, so the result reveals nothing about ungranted repositories.
+- **Author leg.** `rf.author` is the router over the primary App.
+- **Reviewer leg.** The reviewer App is a second App with its own installations. It gets its own
+  `InstallationResolver` and router, built the same way from `ReviewerApp`.
+- **Board and notify lanes.** `buildBoardIngestLane` and `buildForgeNotifyLane` take the author
+  router instead of `*forge.GitHub`, so issue hydration, the reconcile sweeps, check roll-ups and
+  the head-SHA lookup read through the owner's installation. GitHub sends one App's webhooks for
+  every installation to the App's single webhook URL, and the ingress does not filter by
+  installation, so events from owner B already arrive.
+
+### Issue edits
+
+A new `forge_edit_issue` tool edits an issue's title, body or both (DL-582). It follows
+`forge_transition_issue_state`: the same scope check, the same author leg, and no ownership row.
+A body edit goes through `StampOwner` with the caller's identity, so the edited body carries the
+editor's attribution header. A title-only edit sends no body and leaves the body untouched. GitHub
+uses `PATCH /repos/{repo}/issues/{number}`. Linear uses its `issueUpdate` mutation with `title` and
+`description`.
 
 ### Grant acceptance
 
-`checkOrg` drops the owner-match rule, so `checkOrgFromGrants` is deleted. A new owner must still
-have an installation, or the grant fails with `FAILED_PRECONDITION`. Under OQ-1 (b) the wildcard
-rule goes too, and under (a) it stays. Granting under a new owner signals a secrets refresh as any
+`checkOrg` drops the owner-match rule and the wildcard rule from compass#2385, so
+`checkOrgFromGrants` is deleted. A new owner must have an installation of the primary App, and of
+the reviewer App when one is configured. Otherwise the grant fails with `FAILED_PRECONDITION`,
+and the message names the missing App. Granting under a new owner signals a secrets refresh as any
 grant does. The owner's file appears in the container on the next materialize.
 
 ### Alternatives considered
@@ -247,22 +215,21 @@ grant does. The owner's file appears in the container on the next materialize.
 ### Global Constraints
 
 - Go at the compass module's floor. Helper and runner code stay `CGO_ENABLED=0`.
-- `--forge-installation-id` stays the default installation for board ingestion, webhooks, the
-  reviewer leg and the notify lane.
+- `--forge-installation-id` names the default installation: the `*` group, the `hosts.yml`
+  token and the primary client. Every forge call on another owner uses that owner's installation.
 - No token value in a log, error, argv, or `String()`. `ResolvedSecret` keeps redacting `Value`
   and `Version`, and the helper never echoes its input.
 - No change to the brokered permission set (`contents: write`, `pull_requests: write`,
-  `metadata: read`) unless OQ-2 rules (b).
+  `metadata: read`).
 - No shell logic. Nix wrappers are a single `exec` line.
 - Public repository: no private-repository names, paths or PR links in code, comments, tests,
   docs or PR bodies. This includes the names of private test repositories.
 - Each task lands its failing test first, then the code that turns it green.
 - Stack compass PRs linearly on compass#2385 (`forge/rig-5653-installation-lookup`):
-  T3, then T4, then T5, then T6. T2 is a separate RigelBuild/jj-vine PR off its `main`.
-- Rollout: mixed-owner grant sets already exist, so T4 reaches them as soon as the server deploys.
-  OQ-4 decides how a runner without T3 stays safe.
-- Follow-ups: none filed. OQ-3 (a) and OQ-5 (b) each add one follow-up issue, filed when Matt
-  rules.
+  T3, T4, T5, T6, T7, then T8. T2 is a separate RigelBuild/jj-vine PR off its `main`.
+- Rollout: the server and runners cut over together. Only dev runs this, and dev can be wiped, so
+  there is no mixed-runner window.
+- Follow-ups: RIG-5819 (gh wrapper).
 
 ### T1. Installation resolver, `MintFor`, `checkOrg` installation check (done)
 
@@ -318,10 +285,7 @@ func GHOwnerTokensScript(homeDir string, creds []GHCredentials) (string, error)
 // go/cmd/compass-forge-credential
 // compass-forge-credential git-credential get|store|erase   (store/erase are no-ops)
 // compass-forge-credential token --host H [--repo OWNER/NAME]
-// Only if OQ-5 rules (a): compass-forge-credential gh REAL_GH [ARGS...], which picks the owner from
-// -R/--repo, GH_REPO, a `gh api [/]repos/<owner>/…` endpoint, then the remote gh would choose
-// (remote.<name>.gh-resolved, then upstream > github > origin); it execs REAL_GH with GH_TOKEN
-// set, and execs unchanged when GH_TOKEN or GITHUB_TOKEN is set or the owner is the default.
+// The gh wrapper is RIG-5819; this task ships only `token`.
 ```
 
 Also: `resolvedSecretToProto` in `go/internal/runnerhub/handler.go` and the fetch mapping in
@@ -358,7 +322,7 @@ func (r *InstallationResolver) DefaultOwner(ctx context.Context) (string, error)
 
 type ownerCredential struct{ owner, key, token string }
 // One credential per group; a rejected group retries with the owner user's grants under the same
-// owner (widen only). The default credential is LAST (OQ-4 (a)).
+// owner (widen only). The default credential is LAST.
 func (b *gitCredentialBroker) credentials(ctx context.Context, agent store.AccountID) []ownerCredential
 // last: map[store.AccountID]map[string]string, agent -> owner -> key
 func (b *gitCredentialBroker) credentialForLastKey(agent store.AccountID, owner, requested string) (token, key string)
@@ -374,11 +338,11 @@ DeliveryFile, Host, Owner}` per credential. Tests (`go/server/git_credential_tes
 - Revoking B's last repository revokes B's token and keeps A's.
 - The default credential is emitted last.
 - A `*` credential carries the default installation's login in `Owner`, never `*`.
-- Under OQ-1 (b): an owner `*` plus an agent row under B serves `*` and B; `*` plus a row under
-  the default owner mints only `*`.
+- An owner `*` plus an agent row under B serves `*` and B; `*` plus a row under the default owner
+  mints only `*`.
 - A single-owner agent emits exactly today's one secret, with `Owner` set.
 
-### T5. Forge writes route by repository owner
+### T5. Author and reviewer legs route by repository owner
 
 Lane: forge. Base: T4.
 
@@ -392,58 +356,102 @@ func NewOwnerRoutedGitHub(primary *GitHub, resolver *InstallationResolver, cfg G
 // Implements forge.Provider; every repo-taking method resolves the owner's installation first and
 // wraps a resolver error as fmt.Errorf("%w: %w", ErrInstallationLookup, err).
 func (r *OwnerRoutedGitHub) AppLogin(ctx context.Context) (string, error) // delegates to primary
-func (r *OwnerRoutedGitHub) OnDefaultInstallation(ctx context.Context, repo string) (bool, error)
 
 // go/server
 // Shared by checkInstallation and mapForgeError; each caller maps forge.ErrNoInstallation itself.
 func installationErrorCode(err error) connect.Code
-func registerGitHubForgeCoordinate(reg *forgeProviderRegistry, fc ForgeConfig, author forge.Provider, reviewer *forge.GitHub) error
+func registerGitHubForgeCoordinate(reg *forgeProviderRegistry, fc ForgeConfig, author, reviewer forge.Provider) error
 ```
 
-`buildForgeWriteService` wraps the primary client when the installation resolver is non-nil.
-Under OQ-3 (a), `subscribeForge` and `submitReview` call `OnDefaultInstallation` after
-`requireForgeScope`, and return `forgeErr(connect.CodeFailedPrecondition, "forge: subscriptions
-and reviews cover only repositories on the default GitHub App installation")` when it is false.
-Tests:
+`buildForgeWriteService` wraps the primary client, and builds a reviewer `InstallationResolver`
+and router from `ReviewerApp`. Tests:
 
 - A write on owner B's repository uses B's installation token.
 - The default owner's write uses the primary client and its rate gate.
+- `forge_submit_review` on B uses the reviewer App's installation on B.
 - An owner with no installation returns not-found, and a throttled lookup returns unavailable.
-- `forge_subscribe` and `forge_submit_review` on B return the failed-precondition result.
 - `forge_mirror`'s `AppLogin` assertion holds on the router.
 
-### T6. Accept mixed owners, spec, docs, proof
+### T6. Board and notify lanes read through the owner's installation
 
 Lane: forge. Base: T5.
+
+`OwnerRoutedGitHub` also implements `forge.NotifyReader`, `forge.PullRequestResolver` and the
+ingest reader interfaces (`ListIssues`, `GetPullRequest`, `ListOpenPullRequests`, and the updated
+lister). `buildBoardWebhookWiring` builds the router once and hands it to `buildBoardIngestLane`,
+`buildForgeNotifyLane` and the author leg, so the RIG-2991 test still sees one shared reader.
+Tests:
+
+- A notify reconcile sweep on a subscribed B repository reads with B's installation token.
+- A board webhook for a B repository hydrates the issue through B's installation.
+- `forge_subscribe` on B, then a new comment on that issue, notifies the subscriber.
+
+### T7. `forge_edit_issue`
+
+Lane: forge. Base: T6.
+
+Interfaces:
+
+```proto
+// proto/compass/v1/agent_gateway.proto
+message EditIssueRequest {
+  string repo = 1;                // REQUIRED
+  uint64 issue_number = 2;
+  optional string title = 3;      // unset = unchanged
+  optional string body = 4;       // WITHOUT the owner header; the Server stamps it. Unset = unchanged
+}
+// ForgeCallRequest.call gains: EditIssueRequest edit_issue = 17;
+// The result is the updated compass.v1.Issue in ForgeCallResult.issue.
+```
+
+```go
+// go/internal/forge/provider.go
+type EditIssue struct{ Title, Body *string }
+// EditIssue returns the UPDATED issue; nil fields are left unchanged.
+EditIssue(ctx context.Context, repo string, number uint64, in EditIssue) (Issue, error)
+```
+
+The agent tool `forge_edit_issue` in `packages/compass-agent/src/forge.ts` has `approval:
+"write"`. Tests:
+
+- With neither field set, the call fails with invalid-argument before any provider call.
+- A body edit stamps the caller, and an agent-supplied header is stripped.
+- A title-only edit sends no body.
+- An edit outside the caller's scope returns the scope error.
+- GitHub sends a `PATCH` with only the set fields; Linear sends `issueUpdate`.
+
+### T8. Accept mixed owners, spec, docs, proof
+
+Lane: forge. Base: T7.
 
 Interfaces:
 
 ```go
 // go/server/agent_repository_service.go
 func (s *agentRepositoryService) checkOrg(ctx context.Context, agent store.AccountID, repo string) error
-// keeps: checkInstallation(org); deletes: checkOrgFromGrants
-// OQ-1 (b) also deletes the wildcard DefaultInstallation() rule; (a) keeps it.
+// keeps: checkInstallation(org), now also on the reviewer resolver when configured
+// deletes: checkOrgFromGrants and the wildcard DefaultInstallation() rule
 ```
 
 Tests:
 
 - Granting `B/two` to an agent holding `A/one` succeeds when B has an installation.
-- Without an installation it fails with `FAILED_PRECONDITION`.
-- Under OQ-1 (b), a `*` agent may add `B/two`; under (a), it is refused.
+- Without a primary installation it fails with `FAILED_PRECONDITION`.
+- With a reviewer App configured and no reviewer installation on B, it fails with
+  `FAILED_PRECONDITION` naming the reviewer App.
+- A `*` agent may add `B/two`.
 
-Add this requirement under `## Agent sessions` in `docs/specs/product/compass.md`. The wording
-follows the OQ-1 and OQ-3 recommendations; adjust it to the rulings.
+Add this requirement under `## Agent sessions` in `docs/specs/product/compass.md`:
 
 ```markdown
 ### Requirement: Agent repository credentials follow each owner's App installation
 
 The Server SHALL mint an agent's GitHub credential separately for each repository owner the agent
 is granted, on that owner's GitHub App installation. The agent's git and jj-vine SHALL each use
-the credential for the repository they act on, and the forge tools SHALL write through that
-owner's installation. Granting a repository whose owner has no installation SHALL fail with
-`FAILED_PRECONDITION`. A wildcard grant SHALL cover the default installation; repositories under
-other owners SHALL need exact grants. Subscriptions and reviews SHALL cover only repositories on
-the default installation.
+the credential for the repository they act on. Every forge call, including subscriptions and
+reviews, SHALL use that owner's installation. Granting a repository whose owner lacks an
+installation of a configured App SHALL fail with `FAILED_PRECONDITION`. A wildcard grant SHALL
+cover the default installation; repositories under other owners SHALL need exact grants.
 
 #### Scenario: Agent holds repositories under two owners
 
@@ -460,35 +468,34 @@ the default installation.
 - **Then** the grant fails with `FAILED_PRECONDITION`
 - **And** the agent's other credentials are unchanged
 
-#### Scenario: Forge tools write through the owner's installation
+#### Scenario: Forge tools use the owner's installation
 
 - **Given** an agent granted `B/two`, where B is not the default installation's owner
-- **When** the agent creates an issue on `B/two` with the forge tools
-- **Then** the Server writes it with a credential for owner B's installation
-- **And** a subscription or review on `B/two` fails with an error that names the limit
+- **When** the agent creates, edits, subscribes to, or reviews on `B/two` with the forge tools
+- **Then** the Server makes each call with a credential for owner B's installation
 ```
 
-Replace the repository-grant paragraph in `docs/self-host.md` with:
+Replace the repository-grant paragraph in `docs/self-host.md` with the text below, and drop the
+wildcard clause from the deployment-wide installations paragraph.
 
 ```markdown
 Each repository must be an exact `org/name`, and its owner must have an installation of the GitHub
-App; otherwise the grant is rejected with `FAILED_PRECONDITION`. An agent may hold repositories
-under several owners: Compass mints a separate token on each owner's installation, and the agent's
-git and jj-vine pick the token for the repository they act on. `gh` uses the default
-installation's token; for another owner, run
+App, and of the reviewer App when one is configured; otherwise the grant is rejected with
+`FAILED_PRECONDITION`. An agent may hold repositories under several owners: Compass mints a
+separate token on each owner's installation, and the agent's git and jj-vine pick the token for
+the repository they act on. `gh` uses the default installation's token; for another owner, run
 `GH_TOKEN="$(compass-forge-credential token --host github.com --repo owner/name)" gh …`. The `*`
 grant covers the default App installation (`--forge-installation-id`); repositories under other
-owners need exact grants. Subscriptions and reviews work only on repositories of the default
-installation. A newly installed owner is accepted within about 30 seconds. The GitHub App must be
-configured.
+owners need exact grants. A newly installed owner is accepted within about 30 seconds.
 ```
 
 Proof on dev, recorded in the PR body. One agent holds `RigelBuild/compass-forge-testbed` and a
 public repository under the second owner's personal-account installation.
 
 - `jj-vine submit` pushes to the second owner's repository and opens a PR there.
-- `forge_create_issue`, `forge_comment_on_issue` and `forge_transition_issue_state` work on that
-  repository, per OQ-2 (a).
+- On that repository, `forge_create_issue`, `forge_edit_issue`, `forge_comment_on_issue` and
+  `forge_transition_issue_state` succeed, and `forge_subscribe` delivers a notification.
+- `forge_submit_review` reviews the PR there.
 - A push to the testbed still succeeds.
 
 ## Tasks
@@ -497,5 +504,7 @@ public repository under the second owner's personal-account installation.
 - [ ] T2. jj-vine `{project}` placeholder (RigelBuild/jj-vine)
 - [ ] T3. Runner delivery: `owner` wire field, owner token files, `compass-forge-credential`, image
 - [ ] T4. Broker mints one token per owner (DL-562)
-- [ ] T5. Forge writes route by repository owner (DL-564)
-- [ ] T6. Accept mixed owners in `checkOrg`, spec requirement, `docs/self-host.md`, dev proof
+- [ ] T5. Author and reviewer legs route by repository owner (DL-564)
+- [ ] T6. Board and notify lanes read through the owner's installation (DL-564)
+- [ ] T7. `forge_edit_issue` (DL-582)
+- [ ] T8. Accept mixed owners in `checkOrg`, spec requirement, `docs/self-host.md`, dev proof
