@@ -2,7 +2,7 @@
 
 Tracker: RIG-1713. Freezes on merge.
 
-Builds on: [compass-manager-comms-substrate](https://github.com/RigelBuild/compass/blob/main/docs/designs/agent/compass-manager-comms-substrate/design.md), [compass-agent-comms-tools](https://github.com/RigelBuild/compass/blob/main/docs/designs/agent/compass-agent-comms-tools/design.md), [compass-agent-inbound-batching](https://github.com/RigelBuild/compass/blob/main/docs/designs/agent/compass-agent-inbound-batching/design.md).
+Builds on: [compass-manager-comms-substrate](../compass-manager-comms-substrate/design.md), [compass-agent-comms-tools](../compass-agent-comms-tools/design.md), [compass-agent-inbound-batching](../compass-agent-inbound-batching/design.md).
 
 Ledger-impact: adds `docs/designs/decisions/agent/DL-459.md` to `DL-465.md`, one row per `Q` heading Q1 to Q7 in order, plus `DL-470.md` and `DL-471.md` for Q8.
 
@@ -82,7 +82,7 @@ Ledger row: DL-461.
 
 One server-wide setting, `--message-cost-threshold` / `COMPASS_MESSAGE_COST_THRESHOLD`, compared to `fanout_tokens`. It is parsed at startup like `resolveUsageEventRetention` (`go/cmd/compass-server/main.go`), not `positiveCap`, which treats `0` as unset. Empty means the default, `0` turns the gate off, and a non-integer fails startup.
 
-The default is `100000`, proposed (OQ1): about 48 idle recipients of a short post (each ≈ `m` + 2,000), or 9 idle agents for the longest allowed post (8,000 tokens, Q8). A deployment chooses the value (see [self-host and managed](https://github.com/RigelBuild/compass/blob/main/docs/concepts/self-host-and-managed.md) and the [OSS core boundary](https://github.com/RigelBuild/compass/blob/main/docs/designs/meta/oss-core-managed-boundary/design.md)).
+The default is `100000`, proposed (OQ1): about 48 idle recipients of a short post (each ≈ `m` + 2,000), or 9 idle agents for the longest allowed post (8,000 tokens, Q8). A deployment chooses the value (see [self-host and managed](https://github.com/RigelBuild/compass/blob/main/docs/concepts/self-host-and-managed.md) and the [OSS core boundary](../../meta/oss-core-managed-boundary/design.md)).
 
 For tuning, comms counts outcomes on `compass.message_cost_gate` (`compass_message_cost_gate_total`, attribute `outcome` = `posted`, `held`, `confirmed`, `estimate_only`, `rejected_length` or `rejected_ceiling`), built like the `fabricPublishFailures` counter in `go/internal/comms/comms.go`.
 
