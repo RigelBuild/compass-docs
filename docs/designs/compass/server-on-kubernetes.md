@@ -256,6 +256,12 @@ stream needs h2 end to end.
 - **Node.** The KVM node exposes `/dev/kvm` as the extended resource named by
   `kvmResourceName`, stages the seccomp profile at `seccompProfilePath`
   under the kubelet seccomp root, and supports `hostUsers: false`.
+- **Session volumes.** `hostPaths.sessionVolumeRoot` is a directory with no
+  project id. The operator creates `volumes/` inside it and puts the project
+  id, `FS_XFLAG_PROJINHERIT` and the limits on `volumes/`. The Runner's
+  volume root is that subdirectory (P8). The quota check needs an
+  unprojected reference above the volume root, and in the pod the only one
+  is the top of the hostPath mount.
 
 **Delivery split and paired tags (D8).** Public compass holds
 `tools/server-manifests/` and `tools/runner-manifests/`: values in, plain
@@ -403,7 +409,8 @@ restart: it re-dials, re-enrolls with the hub, and keeps its microVMs.
   product detail.
 - **PRs.** Each task is one compass PR, red then green. P2 merges after P4,
   because its output boots only with P4. P5, P6 and P7 form one stack in
-  that order: all three edit `tools/runner-image/` and `release.yml`.
+  that order: all three edit `tools/runner-image/` and `release.yml`. P8
+  edits only `tools/runner-manifests/` and is independent of the rest.
 - **Images.** Digest only. Renderers reject tags, as `assertRunnerImageDigest`
   does. Every image is an OCI index of `linux/amd64` and `linux/arm64` once
   P7 lands.
@@ -426,7 +433,8 @@ restart: it re-dials, re-enrolls with the hub, and keeps its microVMs.
 
 ```text
 P1 server image (#2355, merged) ─┐
-P3 runner values (#2360, merged) ┼──► operators render and deploy
+P3 runner values (#2360, merged) ┤
+P8 runner volume root ───────────┼──► operators render and deploy
 P4 admin token (Go) ──► P2 server renderer (#2363) ┘
 P5 anonymous reads ──► P6 paired main tags ──► P7 multi-arch images
 Deferred: F1 door TLS reload, F2 tokenFile
@@ -447,7 +455,7 @@ reproducible digest. Files: `server-image/{Dockerfile,moon.yml,.dockerignore}`,
 
 ### P2 — Server manifests renderer
 
-Open as compass PR #2363. Against its current head it must drop
+The first renderer merged as compass PR #2363. A follow-up PR against main must drop
 `initImage`, the `init-admin-token` init container and the `postgres` value
 with its StatefulSet, Service and NetworkPolicy. It must add `forge`,
 `nodeSelector` and `toleration`. Tests use golden output plus invariants:
@@ -783,6 +791,56 @@ Tests, red first:
 - `compass-guest-image:eval-arm64`: the kernel-target assertion passes at
   the pin, and fails when its expected map swaps the two names.
 
+### P8 — Runner volume root below the session mount
+
+`renderRunnerManifests` (`tools/runner-manifests/render-core.ts`) mounts
+`hostPaths.sessionVolumeRoot` at `SESSION_MOUNT_PATH`
+(`/var/lib/compass/sessions`) and sets `COMPASS_MICROVM_VOLUME_ROOT` to
+`SESSION_MOUNT_PATH` too, with `COMPASS_MICROVM_QUOTA_REQUIRED=true`.
+`mountRoot` (`go/internal/runtime/microvm_quota_linux.go`) walks up until
+`st_dev` changes. In the pod, that boundary is the top of the hostPath bind
+mount. So for the volume root, `mountRoot` returns `distinct=false`, and
+`readVolumeQuota` fails startup: "point --microvm-volume-root (or
+$COMPASS_MICROVM_VOLUME_ROOT) at a SUBDIRECTORY of the quota'd filesystem
+rather than at its mount point". Every rendered Runner fails its preflight.
+
+The fix is a subdirectory. A new const `SESSION_VOLUME_ROOT` is
+`${SESSION_MOUNT_PATH}/volumes`, and `COMPASS_MICROVM_VOLUME_ROOT` takes it.
+The mount and the hostPath (`type: "Directory"`) are unchanged.
+
+The quota also moves down. The kernel projects the quota into `statfs` only
+for an inode that has the project-inherit flag: `xfs_fs_statfs`
+(`fs/xfs/xfs_super.c`) checks `XFS_DIFLAG_PROJINHERIT`, and `ext4_statfs`
+(`fs/ext4/super.c`) checks `EXT4_INODE_PROJINHERIT`. If the hostPath itself
+carried the project, its root would read projected totals, and the check
+would compare the project with itself. So the operator puts the project on
+`<sessionVolumeRoot>/volumes` and leaves `sessionVolumeRoot` without one.
+The renderer cannot create or check the subdirectory. A missing one fails
+closed: `readVolumeQuota` returns `statfs "<path>": …`, as
+`TestReadVolumeQuotaAbsentPath` requires.
+
+The alternative keeps the volume root at the mount and makes the hostPath
+the quota'd directory. It does not work: the volume root is still the top of
+the mount, so `distinct` stays false. Any layout that passes needs an
+unprojected directory at the top of the mount and the project below it.
+
+The README's "Other node prerequisites" bullet for the session tree says to
+put the project quota on `<sessionVolumeRoot>/volumes`, owned by uid and gid
+65532, and not on `sessionVolumeRoot`.
+
+Tests, red first, in `tools/runner-manifests/render-core.test.ts`:
+
+- "uses runtime settings consumed by compass-runner":
+  `COMPASS_MICROVM_VOLUME_ROOT` is `/var/lib/compass/sessions/volumes`.
+- New: the volume root is a strict subdirectory of the `session-volumes`
+  `mountPath`. The test reads both from the rendered DaemonSet, so it fails
+  on today's output, where they are equal.
+- "mounts only the session tree, runtime tree, and projected token" keeps
+  `/var/lib/compass/sessions` as the mount path.
+
+The Runner renderer has no golden file. `tools/server-manifests/golden.yaml`
+holds no Runner object, so it does not change.
+
 ### Interfaces
 
 ```ts
@@ -825,6 +883,11 @@ RunnerDeployValues.egressAllow?: readonly string[];
 RunnerDeployValues.serverCA?:
   | { configMapName: string; secretName?: undefined; key: string }
   | { secretName: string; configMapName?: undefined; key: string };
+
+// tools/runner-manifests/render-core.ts (P8)
+const SESSION_MOUNT_PATH = "/var/lib/compass/sessions"; // unchanged: session-volumes mountPath
+const SESSION_VOLUME_ROOT = `${SESSION_MOUNT_PATH}/volumes`; // new: COMPASS_MICROVM_VOLUME_ROOT value
+// RunnerDeployValues.hostPaths is unchanged; the operator creates <sessionVolumeRoot>/volumes with the project quota
 
 // tools/runner-image/assert-public-core.ts (P5)
 export function publicVerdict(result: ProbeResult, ref: string): { ok: true } | { ok: false; message: string };
@@ -931,7 +994,7 @@ func fetchHTTPS(ctx context.Context, client *http.Client, u, bearer string) ([]b
 
 - [x] P1 — Server image and publish lane, compass PR #2355, after #2357
 - [ ] P2 — `tools/server-manifests` renderer: no Postgres, no init container,
-  `forge`, placement values, digest-only images (compass PR #2363), after P4
+  `forge`, placement values, digest-only images (follow-up to compass PR #2363), after P4
 - [x] P3 — Runner renderer `serverCA` and `egressAllow`, compass PRs #2358
   and #2360
 - [ ] P4 — Admin token file from a Secret volume (Go), with the spec change
@@ -942,3 +1005,6 @@ func fetchHTTPS(ctx context.Context, client *http.Client, u, bearer string) ([]b
 - [ ] P7 — Multi-arch (`linux/amd64`, `linux/arm64`) images in every lane,
   index-aware retag and tagger, per-arch guest kernel file, boot modules and
   console, arm64 guest build gate, after P6
+- [ ] P8 — Runner renderer sets `COMPASS_MICROVM_VOLUME_ROOT` to
+  `/var/lib/compass/sessions/volumes`, with the README quota layout;
+  independent of P2
