@@ -2,13 +2,13 @@
 
 ## Open Questions
 
-1. **Index on `pipelines.updated`.** T1 indexes `updated`, which the
-   candidate query filters on. xorm `Sync` builds it at startup; on
-   Postgres the build blocks writes to `pipelines`. Without it, each pass
-   scans the terminal rows. **Recommendation:** add it. Decision needed:
+1. **Index on `pipelines.updated`.** T1 indexes `updated` for the
+   candidate query. xorm `Sync` builds it at startup, and on Postgres the
+   build blocks writes to `pipelines`. Without it, each pass scans the
+   terminal rows. **Recommendation:** add it. Decision needed:
    approve the index, or accept the scan.
-2. **Which delivered states to repair.** Independent of Q1. Two losses do
-   not leave `pending`. An outage can lose both writes, so the context is
+2. **Which delivered states to repair.** Two losses do not leave
+   `pending`. An outage can lose both writes, so the context is
    `absent`. And `Restart` (server/pipeline/restart.go) makes a new
    pipeline on the same commit; if its writes drop, the old final state
    stays, for example a false `success`.
@@ -98,10 +98,11 @@ per tick, a stop on `ctx.Done()`.
 
 Each entry holds the pipeline's `updated`; a change resets it.
 
-- Done: `clean`, `reposted`, `mismatch`, `incomplete`, `gave_up`,
-  `unsupported`, a moved head, an inactive repo, or no owned context.
+- Done: `clean`, `reposted`, `mismatch`, `gave_up`, `unsupported`, a
+  moved head, an inactive repo, or no owned context.
 - Read again after 15 minutes: `superseded` by a later owner or the fence,
-  and `closed`. A later owner can be deleted; a pull request can open again.
+  `closed`, and `incomplete`, which is never written. Owners and pull
+  requests change.
 - Open, read next pass: `read_error`, `write_error`, and not reached. The
   third `write_error` gives `gave_up`.
 - At pass start, an entry whose `updated` left the lookback is removed. An
@@ -111,24 +112,24 @@ Each entry holds the pipeline's `updated`; a change resets it.
 
 - `forge.WithReconcile(ctx, maxCalls)` marks the pass context and holds its
   budget. `rateLimitObserver.RoundTrip` (server/forge/github/ratelimit.go)
-  wraps every GitHub client, the App JWT client too. It calls
-  `forge.SpendCall` before each request; a spent budget gives
-  `types.ErrBudgetSpent` and sends nothing. So `max-calls` caps real
-  requests, an unplanned retry or mint included. `forge.Refresh` uses the
-  OAuth endpoint, not the API.
+  wraps every GitHub client, the App JWT client too. Before each request it
+  calls `forge.SpendCall`, which returns `types.ErrBudgetSpent` at
+  `max-calls`, so retries and mints count. `forge.Refresh` uses the OAuth
+  endpoint, not the API.
+- `RoundTrip` checks every response, mints included. `Remaining` below
+  20 % of `Limit` calls `forge.MarkQuotaLow`; the next `SpendCall` then
+  returns `types.ErrQuotaLow` and sends nothing. A rate-limit error also
+  gives `types.ErrQuotaLow`. The live path keeps the last fifth. Repair
+  writes make one attempt, to spare the secondary limit.
 - Before each step, the reconciler adds the step's reserve to the real
   count and ends the pass if it exceeds `max-calls`: 3 for a status read,
   1 for a head read, 1 for a write, 1 for a fence's head read. A repo's
-  first status read in a pass adds 2 for the App token mint
-  (`GetRepositoryInstallation`, `CreateInstallationToken`); later steps
-  share the token. The forge client and its token cache last 10 minutes
-  (`forgeCacheTTL`, server/services/manager.go), so mints are common.
+  first status read in a pass adds 2 for the App token mint; later steps
+  share the token. The token cache lives 10 minutes (`forgeCacheTTL`), so
+  mints are common.
 - The worst pipeline costs 10: a mint, 3 pages, a head read and two fenced
-  writes. So `max-calls` has a minimum of `10`. The default `30` allows at
+  writes. That is the `max-calls` minimum. The default `30` allows at
   most 900 requests an hour.
-- `Remaining` below 20 % of `Limit` on a read, or a rate-limit error, gives
-  `types.ErrQuotaLow` and leaves the last fifth to the live path. Repair
-  writes make one attempt, to spare the secondary limit.
 - Servers on one App share each installation's limit: the floor sees the
   shared `Remaining`, but `max-calls` caps only this server.
 
@@ -286,10 +287,14 @@ func WithReconcile(ctx context.Context, maxCalls int64) (context.Context, *atomi
 // Reconciling reports whether ctx is a reconciler call.
 func Reconciling(ctx context.Context) bool
 
-// SpendCall charges one request to a reconciler ctx. At maxCalls it returns
-// types.ErrBudgetSpent and charges nothing. It does nothing for other
-// contexts.
+// SpendCall charges one request to a reconciler ctx before it is sent. It
+// returns types.ErrQuotaLow after MarkQuotaLow, or types.ErrBudgetSpent at
+// maxCalls, and then charges nothing. It does nothing for other contexts.
 func SpendCall(ctx context.Context) error
+
+// MarkQuotaLow makes every later SpendCall on a reconciler ctx return
+// types.ErrQuotaLow. It does nothing for other contexts.
+func MarkQuotaLow(ctx context.Context)
 
 // server/forge/status_reader.go
 
@@ -338,10 +343,17 @@ func RepairAggregateStatus(ctx context.Context, f Forge, s store.Store, u *model
 // has no MetaStatusReporter.
 func RepairMetaStatus(ctx context.Context, f Forge, s store.Store, u *model.User, r *model.Repo, b *model.Pipeline, later func() (bool, error)) error
 
-// server/forge/github/ratelimit.go: RoundTrip calls
-// forge.SpendCall(req.Context()) first, and returns its error without
-// sending.
+// server/forge/github/ratelimit.go
+const reconcileQuotaFloor = 0.2
+
+// RoundTrip calls forge.SpendCall(req.Context()) first, and returns its error
+// without sending. When forge.Reconciling(req.Context()) and
+// quotaLow(resp.Header), it calls forge.MarkQuotaLow.
 func (o *rateLimitObserver) RoundTrip(req *http.Request) (*http.Response, error)
+
+// quotaLow reports whether h shows X-RateLimit-Remaining below
+// reconcileQuotaFloor of X-RateLimit-Limit. Without a Limit it is false.
+func quotaLow(h http.Header) bool
 
 // server/forge/github/retry.go: signature unchanged. When
 // forge.Reconciling(ctx), it makes one attempt and returns quotaErr(err).
@@ -357,7 +369,6 @@ func ignoreSkip(ctx context.Context, err error) error
 
 // server/forge/github/status_read.go
 const (
-	reconcileQuotaFloor   = 0.2
 	combinedStatusPages   = 3   // page cap of one DeliveredStatuses call
 	combinedStatusPerPage = 100 // statuses per page
 )
@@ -372,9 +383,6 @@ func (c *client) ExpectedState(p *model.Pipeline, meta bool) string
 // calls PullRequests.Get. Another ref is an error.
 func (c *client) PullRequestHead(ctx context.Context, u *model.User, r *model.Repo, p *model.Pipeline) (string, bool, error)
 
-// quotaLow reports whether resp shows Remaining below reconcileQuotaFloor of Limit.
-func quotaLow(resp *github.Response) bool
-
 // quotaErr wraps a *github.RateLimitError or *github.AbuseRateLimitError
 // as types.ErrQuotaLow. It returns other errors unchanged.
 func quotaErr(err error) error
@@ -387,7 +395,8 @@ func quotaErr(err error) error
   1. Raw states come back; a missing context gives `""`.
   2. A context on page 4 gives `DeliveredUnknown` after 3 requests. When
      page 3 is the last, it gives `""`.
-  3. `Remaining` 900 of 5000 gives `ErrQuotaLow`; 1100 does not.
+  3. Page 1 at `Remaining` 900 of 5000, with the context on page 2: page 2
+     is not sent, and the read gives `ErrQuotaLow`. At 1100, page 2 is read.
   4. A `403` with `X-RateLimit-Remaining: 0` gives `ErrQuotaLow` on a read
      and on a repair write, which posts once.
   5. An open pull request gives its head and `true`, a closed one `false`,
@@ -399,6 +408,9 @@ func quotaErr(err error) error
   9. An App with an empty token cache: the mint sends 2 requests before
      page 1. A budget of 4 sends 2 pages and gives `ErrBudgetSpent`; 5
      reads all 3. A second read costs 3.
+  10. An empty token cache and a `GetRepositoryInstallation` response at
+      900 of 5000: `ErrQuotaLow` with no `CreateInstallationToken` and no
+      status read, counter 1. A second read sends nothing.
 - status_test.go: `GetAggregateContextEvents` gives only `push` for a push
   pipeline with the default format, every event but `deployment` with
   `{{ .context }}`, and nil for a template error.
@@ -421,7 +433,7 @@ Interfaces:
 // server/pipeline/status_reconcile.go
 const (
 	statusReconcileSettle  = 2 * time.Minute
-	statusReconcileRecheck = 15 * time.Minute // superseded and closed are read again after this
+	statusReconcileRecheck = 15 * time.Minute // superseded, closed and incomplete are read again after this
 	statusReadReserve      = 3                // combined-status pages
 	mintReserve            = 2                // App token mint, added to a repo's first status read in a pass
 	headReadReserve        = 1                // PullRequestHead; a pull request write adds one for its fence
@@ -434,6 +446,8 @@ var (
 		Namespace: "woodpecker",
 		Name:      "status_reconcile_results_total",
 		Help:      "Owned status contexts the reconciler checked, by result. expired counts pipelines.",
+		// result: clean, reposted, mismatch, superseded, closed, unsupported,
+		// read_error, incomplete, write_error, gave_up, expired.
 	}, []string{"result"})
 	statusReconcileCalls = promauto.NewCounter(prometheus.CounterOpts{
 		Namespace: "woodpecker",
@@ -482,6 +496,9 @@ type StatusReconciler struct {
 func NewStatusReconciler(s store.Store, lookback, creationTimeout time.Duration, maxCalls int) *StatusReconciler
 
 // Run does one pass. It returns an error only when the candidate query fails.
+// It calls forge.WithReconcile once and adds the counter to
+// statusReconcileCalls. createdAfter is now minus creationTimeout; setup.go
+// always sets CreationTimeout.
 func (r *StatusReconciler) Run(ctx context.Context, now time.Time) error
 
 // ownedContexts applies D1: deployment and pull_request_closed pipelines own
@@ -515,17 +532,10 @@ reconciler := pipeline.NewStatusReconciler(_store, server.Config.Server.StatusRe
 	server.Config.Server.CreationTimeout, server.Config.Server.StatusReconcileMaxCalls)
 ```
 
-- `Run` calls `forge.WithReconcile` once per pass and adds the counter to
-  `statusReconcileCalls`. `createdAfter` is `now - creationTimeout`;
-  setup.go always sets `CreationTimeout`.
-- Result labels: `clean`, `reposted`, `mismatch`, `superseded`, `closed`,
-  `unsupported`, `read_error`, `incomplete`, `write_error`, `gave_up`,
-  `expired`.
 - Logs: `info` per `reposted` (repo, pipeline, SHA, context, status);
   `warn` per `mismatch`, `incomplete`, `gave_up`, `expired`, and a pass
   that budget or quota ends.
 - Q2 option A or C changes only the step-6 branch and test row 2.
-- server.go copies the orphan reaper loop and log lines.
 - Docs: the three `STATUS_RECONCILE_*` sections go after
   `### STATUS_AGGREGATE_FORMAT`, with the defaults, `0` disables, the two
   repaired contexts, and one replica. The GitHub page: the App needs
@@ -544,7 +554,8 @@ posters call the refresher. Counters use `testutil.ToFloat64`.
    `info` line. A second `Run` makes no call.
 2. Absent: repaired. Final and equal: `clean`. Final and different:
    `mismatch`, no write, a `warn` line. `DeliveredUnknown`: `incomplete`,
-   no write, a `warn` line, no read next `Run`.
+   no write, a `warn` line. A `Run` within 15 minutes does not read it; a
+   `Run` after 15 minutes reads it again.
 3. `HasLaterPipeline` true: `superseded`, no forge call. Its events: every
    event but `deployment` with `{{ .context }}`, only `push` with the
    default format.
