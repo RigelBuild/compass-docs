@@ -1,36 +1,23 @@
 # Repair commit statuses left pending after a pipeline ends (RIG-3462)
 
-## Open Questions
+## Rulings
 
-1. **Index on `pipelines.updated`.** T1 indexes `updated` for the
-   candidate query. xorm `Sync` builds it at startup, and on Postgres the
-   build blocks writes to `pipelines`. Without it, each pass scans the
-   terminal rows. **Recommendation:** add it. Decision needed:
-   approve the index, or accept the scan.
-2. **Which delivered states to repair.** Two losses do not leave
-   `pending`. An outage can lose both writes, so the context is
-   `absent`. And `Restart` (server/pipeline/restart.go) makes a new
-   pipeline on the same commit; if its writes drop, the old final state
-   stays, for example a false `success`.
-   - **A.** Repair `pending` only.
-   - **B.** Repair `pending` and `absent`. A final state unlike the stored
-     verdict gives `mismatch` and a `warn` line, with no write.
-   - **C.** Repair `pending`, `absent` and a final mismatch.
+Matt ruled on 2026-10-18.
 
-   **Recommendation:** B. `absent` blocks a merge like `pending`. A mismatch
-   write is safe only with no other writer, and the `mismatch` count shows
-   that first. Decision needed: A, B or C. D2 assumes B.
+- **Q1 = A.** T1 indexes `pipelines.updated`. xorm `Sync` builds it at
+  startup, and on Postgres the build blocks writes to `pipelines` once.
+- **Q2 = B.** Repair `pending` and `absent`. A final state unlike the stored
+  verdict gives `mismatch` and a `warn` line, with no write. A later record
+  can move to repairing a mismatch if the `mismatch` count shows real cases.
 
 ## Decisions
-
-D2 waits on Q2.
 
 - **D1** (DL-565) — Owned contexts: the aggregate when `StatusAggregate` is on, and
   the meta context when `StatusMeta` is on and a pull request pipeline has a
   meta gate. Per-workflow contexts and `pull_request_closed` pipelines are
   out of scope.
 - **D2** (DL-566) — Repair when the pipeline is terminal, owns the context, and
-  GitHub shows `pending` or `absent` (Q2 option B). Liveness is never used.
+  GitHub shows `pending` or `absent` (Q2 = B). Liveness is never used.
 - **D3** (DL-567) — Delivered state: the combined status of the SHA, about one
   request per finished pipeline.
 - **D4** (DL-568) — Supersede: a store check for a later owner, then, for a pull
@@ -535,7 +522,7 @@ reconciler := pipeline.NewStatusReconciler(_store, server.Config.Server.StatusRe
 - Logs: `info` per `reposted` (repo, pipeline, SHA, context, status);
   `warn` per `mismatch`, `incomplete`, `gave_up`, `expired`, and a pass
   that budget or quota ends.
-- Q2 option A or C changes only the step-6 branch and test row 2.
+- Repairing a final mismatch later changes only the step-6 branch and test row 2.
 - Docs: the three `STATUS_RECONCILE_*` sections go after
   `### STATUS_AGGREGATE_FORMAT`, with the defaults, `0` disables, the two
   repaired contexts, and one replica. The GitHub page: the App needs
@@ -587,11 +574,11 @@ posters call the refresher. Counters use `testutil.ToFloat64`.
 
 ## Tasks
 
-- [ ] Matt answers Q1 and Q2.
+- [x] Matt answers Q1 (A) and Q2 (B).
 - [ ] T1, T2, T3 in order: tests fail first, then the code.
 - [ ] `make generate`, `make lint` and `make test-server` pass.
 - [ ] On the CI deployment (one replica), set the interval.
 - [ ] After deploy: `reposted` lines name pipelines whose checks then go
       final; `status_reconcile_calls_total` grows at most `max-calls` per
       interval; the App's `woodpecker_github_ratelimit_remaining` shows no
-      new dip. Record the `mismatch` count for Q2.
+      new dip. Record the `mismatch` count.
