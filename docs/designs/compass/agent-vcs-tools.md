@@ -40,9 +40,7 @@ No open questions remain.
   line. When a line holds a PR another agent authored under the same owner
   (DL-442: "grants are owner-level"), the Server rebases and pushes that
   bookmark and tells the owning agent. On a rebase conflict it pushes
-  nothing and asks the owning agent to resolve. The jj skill rule to "base
-  the later change on the tip of the first PR's line" only worked around
-  missing coordination.
+  nothing and asks the owning agent to resolve.
 - **OQ-7 — pre-push gate.** `vcs_submit` runs cheap format and lint checks
   through the repo's own configured hook runner, not a runner Compass picks.
   The Setup agent installs basic hooks in a repo that has none. CI on the
@@ -151,23 +149,35 @@ every Server create made for an agent. `mirror_messages` already recovers
 through its own lease and `compass-mirror:` marker, so it is left as is.
 
 1. Before the forge call, the Server commits a `forge_write_intents` row
-   in its own transaction: caller, owner, session, coordinate, kind (issue,
-   PR, comment, review), parent number, and head for a PR.
-2. The create carries the intent id. A body ends with
+   in its own transaction: caller, owner, session, `client_request_id`,
+   coordinate, kind (issue, PR, comment, review), parent number, and head
+   for a PR. The row is unique on `(agent, client_request_id)`. Every
+   create needs a key: `forge.ts` already sends
+   `broker.idempotencyKey(toolCallId)` for issue and PR creates, and T7
+   sends it for comments and reviews too. A `submit_stack` entry uses
+   `<call key>:<head_ref>`.
+2. A retry with the same key gets the existing intent back, before any
+   forge call. A done intent returns its object. A pending one runs step 6
+   first.
+3. The create carries the intent id, a UUID v4. A GitHub body ends with
    `<!-- compass:write <id> -->`, as `mirror.WithMarker` ends a mirror
    post, and the Server strips any such marker from agent text first. On
-   Linear, the intent id is the create's own `id` input, as
-   `CommentOnIssue` already sends `clientID`.
-3. After success, one transaction writes the ownership row (issue and PR
+   Linear, the intent id is the create's own `id` input. `IssueCreateInput`
+   takes "The identifier in UUID v4 format", and `CommentOnIssue` already
+   sends `clientID` as the comment's `id`.
+4. After success, one transaction writes the ownership row (issue and PR
    in `forge_authored_artifacts`; comment and review keep the forge key on
    the intent row) and marks the intent done.
-4. When the forge refuses the create, the intent is marked failed. On a
+5. When the forge refuses the create, the intent is marked failed. On a
    timeout, a 5xx, or a failed record, it stays pending.
-5. The same call retried, or a Server sweep of pending intents older than
-   one minute, finds the object and records it: a PR by head, a Linear
-   object by id, and a GitHub issue, comment, or review by the marker,
-   listing from the intent's time. When nothing is found within one hour,
-   the intent is marked failed. The forge then holds nothing to own.
+6. A retry, or a Server sweep of pending intents older than one minute,
+   looks for the object: a PR by head, a Linear object by id, and a GitHub
+   issue, comment, or review by the marker, listing from the intent's
+   time. A hit is recorded. On a miss, a retry sends the create again
+   under the same intent id. Linear refuses a second create with that id.
+   If GitHub had not yet listed the first one, both objects carry the
+   marker, and the sweep records each, so neither is unowned. The sweep
+   marks an intent failed after one hour with no hit.
 
 `submit_stack` (field 17) takes entries bottom to top. Per entry:
 
@@ -332,10 +342,12 @@ records the canonical name with no extra read. Lookup:
 non-null `merged_at`. `forge.Issue` gains `IsPullRequest`, set from
 `ghIssue.PullRequest`. `FindByWriteMarker` lists issues, issue comments, or
 reviews created since the intent and matches `<!-- compass:write <id> -->`;
-Linear reads the object by the intent id. Linear PR calls return
+Linear reads the object by the intent id. `CreateIssue` gains an `ID`
+field, which Linear sends as `IssueCreateInput.id`. Linear PR calls return
 `ErrUnsupported`. Red → green (`httptest`): PATCH body, ready, hit, miss,
 merged, `full_name` on create and on read, 422, a PR number read as an
-issue, a marker hit and miss per kind, Linear.
+issue, a marker hit and miss per kind, a Linear issue created with an id
+and read back by it, a second Linear create with that id refused.
 
 ### T2 — stack block
 
@@ -422,9 +434,10 @@ type WriteIntent struct {
 	AgentAccountID AccountID
 	OwnerUserID    AccountID
 	SessionID      string
+	RequestKey     string // the call's client_request_id; required
 }
 
-// A PR intent: ErrConflict when another agent holds the head; the caller's own retry returns its row.
+// Same (agent, RequestKey): returns the stored row. A PR intent: ErrConflict when another agent holds the head.
 func (s *Store) RecordWriteIntent(ctx context.Context, in WriteIntent) (WriteIntent, error)
 // ErrNotFound on a miss.
 func (s *Store) PRIntentForHead(ctx context.Context, provider ForgeProvider, host, repo, headRef string) (WriteIntent, error)
@@ -438,13 +451,15 @@ func (s *Store) AuthoredArtifactByCoordinateFold(ctx context.Context, provider F
 
 Table `forge_write_intents` in `migrations/0001_init.sql`: PK
 `(tenant_id, id)`; state pending, done, or failed; `forge_key` and
-`created_at`; a unique index on `(tenant_id, forge_provider, forge_host,
+`created_at`; a unique index on `(tenant_id, agent_account_id,
+client_request_id)`, and one on `(tenant_id, forge_provider, forge_host,
 repo, head_ref)` for PR rows; the `forge_authored_artifacts` agent/owner
 FK; RLS. A done comment or review row is that object's ownership record.
 sqlc queries go in `queries/forge_write_intents.sql`. `RecordWriteIntent`
 commits on its own. Existing rows need no backfill. Red → green
-(`pgtest`): another agent's PR intent for a head conflicts; a retry
-returns the same row; the same repo and head on two hosts are two
+(`pgtest`): another agent's PR intent for a head conflicts; the same key
+returns the same row with the same id; an empty key is refused; the same
+repo and head on two hosts are two
 intents; complete writes the row and the state together or neither;
 pending lists only old pending rows; mixed case finds the authored row;
 two rows that differ only in case return the oldest.
@@ -473,9 +488,10 @@ Red → green (`FakeProvider`, T10 fake mirror):
   and a PR number refuse; an outage fails the entry as retryable with no
   create.
 - Two new entries under one call key: two PRs, two rows with a NULL key.
-- For each create kind, the store write after the forge create fails: a
-  retry, or the sweep alone, ends with one object on the forge and one
-  ownership record; an agent-written `compass:write` marker is stripped.
+- For each create kind, the forge create succeeds but its response is
+  lost, or the store write after it fails: a retry with the same key, or
+  the sweep alone, ends with one object on the forge and one ownership
+  record; an agent-written `compass:write` marker is stripped.
 - A create the forge refused leaves a failed intent; a pending intent with
   nothing on the forge after one hour turns failed.
 - An unchanged entry sends no PATCH; an agent-written block is replaced.
@@ -534,7 +550,9 @@ fetches. A closed PR with no `<name>@origin` returns success, so a retry is
 safe. `packages/compass-agent/src/cli.ts` adds the tools to `nativeTools`.
 `createForgeTools` in `packages/compass-agent/src/forge.ts` drops
 `forge_create_pull_request` (D1), and the name list in `forge.test.ts`
-changes first. Red → green: each D4 refusal fails before the broker call;
+changes first. Its comment and review tools send
+`broker.idempotencyKey(toolCallId)` as `clientRequestId`, as the create
+tools do (D2). Red → green: each D4 refusal fails before the broker call;
 the no-issue refusal names `forge_list_issues` and `forge_create_issue`; a
 hook failure refuses; a test hook receives `origin`, the URL, and one stdin
 line per own bookmark; a hook past 120 s is stopped, the push runs, and the
