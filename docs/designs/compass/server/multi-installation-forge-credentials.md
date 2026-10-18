@@ -164,11 +164,12 @@ router is a drop-in for the shared `*forge.GitHub`.
   cached by installation id. Each has its own rate gate, because GitHub budgets per installation.
 - `Name`, `BodyLimit` and `AppLogin` delegate to the primary client. The App's bot login is the
   same on every installation, so `forge_mirror`'s identity check is unchanged.
-- The router wraps resolver errors in `forge.ErrInstallationLookup`. `mapForgeError` classifies
-  them with `checkInstallation`'s rules. A missing installation becomes the same not-found result
-  as a 403 or 404. Budget exhaustion becomes resource-exhausted, an App credential failure becomes
-  internal, and any other lookup failure becomes unavailable. A transient lookup failure never
-  reads as "not found".
+- The router wraps resolver errors in `forge.ErrInstallationLookup`. `installationErrorCode`
+  classifies an App credential failure as internal and any other lookup failure as unavailable,
+  for both callers. Each caller maps two errors itself. `ErrNoInstallation` is failed-precondition
+  for a grant, and not-found for a forge call (the same result as a 403 or 404).
+  `ErrBudgetExhausted` is unavailable for a grant and resource-exhausted for a forge call. A
+  transient lookup failure never reads as "not found".
 - **Author leg.** `rf.author` is the router over the primary App.
 - **Reviewer leg.** The reviewer App is a second App with its own installations. It gets its own
   `InstallationResolver` and router, built the same way from `ReviewerApp`.
@@ -358,13 +359,16 @@ func NewOwnerRoutedGitHub(primary *GitHub, resolver *InstallationResolver, cfg G
 func (r *OwnerRoutedGitHub) AppLogin(ctx context.Context) (string, error) // delegates to primary
 
 // go/server
-// Shared by checkInstallation and mapForgeError; each caller maps forge.ErrNoInstallation itself.
+// App credential failure -> Internal, other lookup failure -> Unavailable. Callers map
+// forge.ErrNoInstallation and forge.ErrBudgetExhausted first, each to its own code.
 func installationErrorCode(err error) connect.Code
 func registerGitHubForgeCoordinate(reg *forgeProviderRegistry, fc ForgeConfig, author, reviewer forge.Provider) error
 ```
 
-`buildForgeWriteService` wraps the primary client, and builds a reviewer `InstallationResolver`
-and router from `ReviewerApp`. Tests:
+`buildBoardWebhookWiring` builds the primary `OwnerRoutedGitHub` once and returns it in place of
+today's shared `*forge.GitHub`. `buildForgeWriteService` takes that instance as the author leg, so
+author, board and notify calls share each installation's client and rate gate. It builds a
+separate reviewer `InstallationResolver` and router from `ReviewerApp`. Tests:
 
 - A write on owner B's repository uses B's installation token.
 - The default owner's write uses the primary client and its rate gate.
@@ -378,8 +382,8 @@ Lane: forge. Base: T5.
 
 `OwnerRoutedGitHub` also implements `forge.NotifyReader`, `forge.PullRequestResolver` and the
 ingest reader interfaces (`ListIssues`, `GetPullRequest`, `ListOpenPullRequests`, and the updated
-lister). `buildBoardWebhookWiring` builds the router once and hands it to `buildBoardIngestLane`,
-`buildForgeNotifyLane` and the author leg, so the RIG-2991 test still sees one shared reader.
+lister). `buildBoardIngestLane` and `buildForgeNotifyLane` take the router from
+`buildBoardWebhookWiring` (T5), so the RIG-2991 test still sees one shared reader.
 Tests:
 
 - A notify reconcile sweep on a subscribed B repository reads with B's installation token.
