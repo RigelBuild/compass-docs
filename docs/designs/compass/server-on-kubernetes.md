@@ -8,10 +8,27 @@
 [Design](#design), ledgered as DL-539 to DL-547 and DL-560 in
 `decisions/server/`.
 
+## Open Questions
+
+- **OQ-13 — arm64 microVM boot proof.** P7 builds the arm64 guest and
+  unit-tests its kernel name and console, but no GitHub-hosted arm64 runner
+  exposes `/dev/kvm`, so no CI job can boot it. No P7 code change depends
+  on the answer; only the arm64 Runner support claim does.
+  1. No pre-merge arm64 boot. The Runner's startup boot canary
+     (`runMicroVMPreflight`, `go/cmd/compass-runner/main.go`) fails closed
+     on a node that cannot boot the guest. The Runner README says amd64
+     only until `compass-go:test-microvm` passes on an arm64 KVM host with
+     GICv3.
+  2. A self-hosted arm64 bare-metal runner for the `microvm` job. It proves
+     every PR, but GitHub says self-hosted runners
+     ["should almost never be used for public repositories"](https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners),
+     because a fork PR can run code on the host.
+
+  **Recommendation:** option 1. P7 is written against it.
+
 ## Resolved decisions
 
-No question is open. Question numbers match the review threads on this
-record.
+Question numbers match the review threads on this record.
 
 - **OQ-1 — Admin token from a Secret.** A Go change (P4). The supplied token
   file may be a symlink, and it may be group-readable when the process holds
@@ -313,9 +330,39 @@ other four lanes are single-arch now:
 
 `flake.nix` lists `systems = [ "x86_64-linux" ]`. `manifestIdentity`
 (`tools/runner-image/retag-core.ts`) refuses an index ("an image index, or
-malformed"), so retag and the P6 tagger must learn to verify one. A KVM node
-of either arch can then run the Runner, and the Server and NATS can run on
-any node.
+malformed"), so retag and the P6 tagger must learn to verify one.
+
+The guest boot path is also amd64-only, in three ways. The
+[guest agent pin record](infra/runtime/compass-guest-agent-pin-multiarch/design.md)
+named them and left them to a follow-up (its T5). P7 is that follow-up.
+
+- **Kernel file.** At the pinned nixpkgs, `linuxPackages.kernel.target` is
+  `bzImage` on `x86_64-linux` and `Image` on `aarch64-linux`. `bzImage` is
+  hard-coded in `kernelImagePath` (`tools/runner-image/build-core.ts`), the
+  kernel path in `tools/guest-image/publish.ts`, `guestImageEnv`
+  (`tools/microvm-boot-test/run-core.ts`), the `microvm` job in
+  `.github/workflows/ci.yml`, and the kernel `annotationName` in
+  `guestAssets` (`go/internal/stack/materialize.go`). That name must equal
+  `ASSET_FILENAMES.kernel` (`tools/guest-image/publish-core.ts`), because
+  `validateGuestLayer` checks the layer annotation.
+- **Boot modules.** `moduleConfigCheck` (`guest-image/default.nix`) fails
+  unless eight symbols are `=m`. The aarch64 kernel config has
+  `CONFIG_VIRTIO_PCI`, `CONFIG_VIRTIO_BLK`, `CONFIG_VIRTIO_NET` and
+  `CONFIG_PACKET` as `=y`, so the arm64 initrd build fails. A built-in module
+  is harmless: kmod `modprobe` exits 0 for it, and `makeModulesClosure`
+  records it as a `builtin` dependency.
+- **Console.** `vmmArgs` (`go/internal/runtime/microvm/launch.go`) always
+  appends `console=ttyS0`. The arm64 serial device is `ttyAMA0`, as
+  cloud-hypervisor's AArch64 example shows, so guestd's stderr would miss
+  the captured console.
+
+P7 fixes all three, with a unit test per arch for each. No CI job can boot
+an arm64 guest: GitHub's hosted arm64 runners expose no `/dev/kvm`
+([runner-images #14062](https://github.com/actions/runner-images/issues/14062)).
+So P7 adds an arm64 build gate, not a boot gate. When P7 lands, the Server
+and NATS run on a node of either arch. The Runner image ships both members,
+but the Runner is supported on amd64 only until an arm64 microVM boot
+passes (OQ-13).
 
 ### Known limitation
 
@@ -478,43 +525,90 @@ containing the supplied bootstrap-admin token") changes to match.
 The five packages are public already. P5 makes every registry read in
 compass anonymous, so D9 holds, and keeps the packages public.
 
-- `retag.ts` probes and verifies with `skopeo inspect --no-creds --raw`. Only
-  the copy uses `--dest-authfile`. `classifyProbe` still reads 403 as
-  ambiguous, because a private package and a missing package give the same
-  403.
-- The `release-image` job (`.github/workflows/release.yml`) has three
-  `skopeo inspect --authfile "$REGISTRY_AUTH_FILE"` reads: the ancestor probe
-  and the two digest checks after the copy. All three use `--no-creds`. Its
-  `skopeo copy --multi-arch all` uses `--dest-authfile`.
-- `inspectCommand` (`tools/agent-image-index/index.ts`) builds every `skopeo
-  inspect` there with `--authfile`; it uses `--no-creds`. `podman manifest
-  add` drops `--authfile`; `podman manifest push` keeps it.
-- `agent-image/publish.sh` reads the remote tag twice with `inspect --raw
-  --authfile`. Both use `--no-creds`.
-- The guest and gateway `publish.ts` pass `auth` to their `inspect` reads.
-  The reads drop it; the push keeps it.
-- Stale text goes: the `release-runner-image` step comment "The runner
-  package is private, so even the probes need auth", the `retag.ts` header
-  "so private packages work", and the `retag-core.test.ts` case name "a
-  private package without auth (403 Forbidden) is ambiguous" and its "on
-  this private package" comment.
-- A new check runs as the last step of each of the five publish jobs. It
-  reads the just-published tag anonymously and fails with the package
-  settings path when the package is not public. A new package therefore
-  fails its first publish until someone sets it public: the one manual step,
-  because no API sets visibility.
+Dropping `--authfile` is not enough. Every publish job writes
+`REGISTRY_AUTH_FILE=$RUNNER_TEMP/ghcr-auth.json` to `$GITHUB_ENV`
+(`.github/workflows/release.yml`). skopeo's `sharedImageFlags` defaults
+`--authfile` to `os.Getenv("REGISTRY_AUTH_FILE")`. podman's
+`GetDefaultAuthFile` returns the same variable first, and `podman manifest
+add` has no `--no-creds`. So each read names its anonymity:
 
-Tests, red first:
+- Every `skopeo inspect` of a registry ref passes `--no-creds`. skopeo then
+  sets an empty `DockerAuthConfig`, which `GetCredentials`
+  (`containers/image`, `pkg/docker/config`) returns before any auth file.
+- Every `skopeo copy` passes `--src-no-creds` and `--dest-authfile <file>`,
+  never a bare `--authfile`. The rule holds for a local source too, where
+  the source flag is a no-op.
+- `podman manifest add` passes `--authfile <runnerTemp>/anonymous-auth.json`,
+  a file holding `{}`. A named auth file turns off every fallback path in
+  `getAuthFilePaths` (`if !userSpecifiedPath`). `podman manifest push` keeps
+  the login file.
 
+The sites:
+
+- `tools/runner-image/`: `retag.ts` builds its probe, copy and verify argv
+  with new `inspectArgv` and `copyArgv` in `retag-core.ts`. Its copy today
+  passes no auth flag and leans on the environment; it now requires
+  `REGISTRY_AUTH_FILE` and fails `EXIT.usage` without it. `tagArgs`
+  (`publish-core.ts`) moves from `--authfile` to the copy pair.
+- `tools/agent-image-index/index.ts`: `inspectCommand` drops `authFile` and
+  passes `--no-creds`; `composeLocalIndex` adds members with the empty auth
+  file.
+- `tools/guest-image/publish.ts` and `tools/gateway-image/publish.ts`: the
+  `auth` spread leaves both `inspect` reads, which pass `--no-creds`. The
+  copy passes `--src-no-creds`, plus `--dest-authfile` when
+  `REGISTRY_AUTH_FILE` is set.
+- `tools/release-notes/index.ts`: `gatherImage` adds `--no-creds`.
+  `tools/guest-image/pin-agent-image.ts` passes it already.
+- The `release-image` job: three `skopeo inspect --authfile
+  "$REGISTRY_AUTH_FILE"` reads (the ancestor probe and two digest checks)
+  and one `skopeo copy --multi-arch all`.
+- `agent-image/publish.sh`: two remote `inspect --raw --authfile` reads and
+  one `copy "nix:$SPEC" "$dest" --authfile`. The pinned fork skopeo
+  (`tools/toolchain/skopeo-nix2container-env.nix`, 1.24.1) has `--no-creds`,
+  `--src-no-creds` and `--dest-authfile`.
+
+`classifyProbe` still reads 403 as ambiguous, because a private package and
+a missing package give the same 403.
+
+Stale text goes: the `release-runner-image` step comment "The runner package
+is private, so even the probes need auth", the `retag.ts` header "so private
+packages work", and the `retag-core.test.ts` case name "a private package
+without auth (403 Forbidden) is ambiguous" and its "on this private package"
+comment.
+
+A new check runs as the last step of each of the five publish jobs. It
+reads the just-published tag anonymously and fails with the package settings
+path when the package is not public. A new package therefore fails its first
+publish until someone sets it public: the one manual step, because no API
+sets visibility.
+
+Tests, red first. Each asserts the flag on every read, not the absence of
+auth:
+
+- `retag-core.test.ts`: `inspectArgv` carries `--no-creds`; `copyArgv`
+  carries `--src-no-creds` and `--dest-authfile` and no `--authfile`.
+- `publish-core.test.ts`: `tagArgs` carries the copy pair and no
+  `--authfile`.
+- `tools/agent-image-index/index.test.ts`: every recorded `skopeo inspect`
+  carries `--no-creds`; every `podman manifest add` carries the empty auth
+  file, whose content is `{}`; only `podman manifest push` carries the
+  login file.
+- `tools/guest-image/publish.test.ts`: the case "threads --authfile to
+  every registry call when the login pinned one" now requires `--no-creds`
+  on each logged `inspect` and `--src-no-creds --dest-authfile
+  /tmp/creds.json` on the `copy`.
+- `tools/gateway-image/publish.test.ts`: the case "passes the auth file to
+  probe, copy, and re-read" expects `inspect --no-creds --raw`, then `copy
+  --src-no-creds --dest-authfile /tmp/registry-auth.json`, then `inspect
+  --no-creds --raw`.
+- A new `tools/runner-image/registry-auth.test.ts` joins continuation lines
+  in `release.yml` and `agent-image/publish.sh`. Every skopeo `inspect` of a
+  non-`nix:` ref must carry `--no-creds`. Every `copy` must carry
+  `--src-no-creds` and `--dest-authfile`. Only `login` may carry
+  `--authfile`. It checks the `gatherImage` template the same way. Today's
+  sources fail all three rules.
 - `assert-public-core.test.ts` maps a manifest to public, and a 403, a
   "manifest unknown" and a timeout to failures that name the package.
-- `retag-core.test.ts`: `probeArgv` carries `--no-creds` and no `--authfile`.
-- `tools/agent-image-index/index.test.ts`: the recorded commands carry
-  `--no-creds` on every `skopeo inspect`, and `--authfile` only on `podman
-  manifest push`.
-- A new `tools/runner-image/registry-auth.test.ts` reads `release.yml`,
-  `agent-image/publish.sh` and the guest and gateway `publish.ts`. It fails
-  on any `inspect` that names `--authfile` or `auth`.
 
 ### P6 — Paired main tags
 
@@ -555,12 +649,13 @@ index, as the agent lane does (D10).
   `.#compass-server`, `.#compass-runner` and the guest assets evaluate on
   both. `guest-image/default.nix` already selects its agent member per
   system (`agentPin.platformFor`).
-- **Build guards.** `tools/runner-image/build.ts` and
-  `tools/server-image/build.ts` take the platform from the host
-  (`x64` → `linux/amd64`, `arm64` → `linux/arm64`) and fail on any other
-  host. `PLATFORM` in `tools/gateway-image/core.ts` becomes a parameter. The
-  `IMAGE_PLATFORM` comment in `tools/runner-image/build.ts` ("the cluster
-  nodes are amd64") goes.
+- **Build guards.** `hostPlatform` (`tools/runner-image/build-core.ts`)
+  maps the host (`x64` → `linux/amd64`, `arm64` → `linux/arm64`) and throws
+  on any other host. `tools/runner-image/build.ts` and
+  `tools/server-image/build.ts` call it; the server lane already imports
+  this module. `PLATFORM` in `tools/gateway-image/core.ts` becomes a
+  parameter. The `IMAGE_PLATFORM` comment in `tools/runner-image/build.ts`
+  ("the cluster nodes are amd64") goes.
 - **Jobs.** Each of `publish-runner-image`, `publish-server-image`,
   `publish-guest-image` and `publish-gateway-image` becomes a matrix over
   `ubuntu-latest` and `ubuntu-24.04-arm`, as `publish-image-amd64` and
@@ -579,6 +674,49 @@ index, as the agent lane does (D10).
   `assertCoherent` compares the index digest and the member list. Every copy
   uses `--multi-arch all --preserve-digests`. `tag-main-images` needs the
   index jobs, not the legs.
+- **Kernel file.** `kernelFileName` (`tools/runner-image/build-core.ts`)
+  maps `linux/amd64` to `bzImage` and `linux/arm64` to `Image`. It is the
+  only TypeScript table. `kernelImagePath`, `buildArgs`, the kernel path in
+  `tools/guest-image/publish.ts`, `assetFilenames` (it replaces
+  `ASSET_FILENAMES` in `tools/guest-image/publish-core.ts`) and
+  `guestImageEnv` take the platform and call it. Each entry point passes
+  `hostPlatform(process.arch)`. `tools/guest-image/moon.yml` and
+  `tools/microvm-boot-test/moon.yml` add `/tools/runner-image/*-core.ts` to
+  their inputs, as `tools/server-image/moon.yml` does. In Go, a new
+  `guestKernelName(goarch)` (`go/internal/stack/materialize.go`) returns
+  `Image` for `arm64` and `bzImage` otherwise, and the kernel entry of
+  `guestAssets` takes its `annotationName` from
+  `guestKernelName(runtime.GOARCH)`. An amd64 artifact then fails
+  `validateGuestLayer` on an arm64 host. `pinSmoke` (`guest-image/default.nix`),
+  which the `compass-guest-image:eval-arm64` task evaluates, also asserts
+  that `compass-guest-kernel.target` is `bzImage` for `x86_64-linux` and
+  `Image` for `aarch64-linux`, so a nixpkgs move that renames the file fails
+  a gate. The `microvm` job in `ci.yml` stays on amd64 and keeps
+  `$kernel/bzImage`.
+- **Boot modules.** `moduleConfigCheck` (`guest-image/default.nix`) accepts
+  `=m` or `=y`. It fails only when a symbol is absent or `is not set`. It
+  becomes a function of the config file, so a fixture test can run it.
+- **Console.** A new `serialConsole(goarch)`
+  (`go/internal/runtime/microvm/launch.go`) returns `ttyS0` for `amd64` and
+  `ttyAMA0` for `arm64`, and errors on any other arch. `launch` calls it
+  with `runtime.GOARCH` before it starts a child and passes the result to
+  `vmmArgs`, which appends `console=<result>`.
+- **arm64 build gate.** A new `guest-arm64` job in `.github/workflows/ci.yml`
+  runs on `ubuntu-24.04-arm` when `microvm_affected` is true, as
+  `agent-fod-arm64` does, and the rollup checks it the same way. It runs
+  `bun tools/microvm-boot-test/run.ts --build-only`. That mode builds the
+  guest and the VMM stack, fails when the kernel file is missing, and skips
+  `go test`. It cannot boot: hosted arm64 runners have no `/dev/kvm`.
+- **arm64 Runner support (OQ-13).** `tools/runner-manifests/README.md`
+  gains the line "Runner nodes must be amd64." The PR that removes it
+  carries a passing `moon run compass-go:test-microvm` log from an arm64
+  KVM host with GICv3. Until then, the Runner's boot canary fails closed on
+  a node that cannot boot the guest.
+- **Docs.** `docs/self-host-guest-image.md` names `Image` beside `bzImage`
+  in its file table and adds an `org.compass.guest.layer.Image` row.
+  Comments that name only `ttyS0` or `bzImage` name both:
+  `go/internal/runtime/microvm/config.go`, `go/internal/guestd/guestd.go`,
+  `go/cmd/compass-guestd/main.go` and `guest-image/default.nix`.
 
 Tests, red first:
 
@@ -590,12 +728,29 @@ Tests, red first:
   tags.
 - `go/internal/stack/materialize_test.go`: an index resolves to the
   `runtime.GOARCH` member; an index with no such member fails and names the
-  arch.
-- `tools/ci-matrix/index.test.ts`: every publish lane has an arm64 leg and an
-  index job.
-- `tools/runner-image/build-core.test.ts` and
-  `tools/server-image/build-core.test.ts`: `hostPlatform("arm64")` returns
-  `linux/arm64`, and `hostPlatform("ia32")` throws.
+  arch. `guestKernelName("arm64")` is `Image` and
+  `guestKernelName("amd64")` is `bzImage`.
+- `tools/runner-image/closure-paths.test.ts`, which already parses
+  `release.yml`: each of the four publish jobs has an `ubuntu-latest` and an
+  `ubuntu-24.04-arm` leg, and each `publish-<lane>-index` job needs both.
+- `tools/runner-image/build-core.test.ts`: `hostPlatform("arm64")` returns
+  `linux/arm64`, and `hostPlatform("ia32")` throws. For `linux/arm64`,
+  `kernelImagePath` and `buildArgs(…).GUEST_KERNEL` end in `/Image`; for
+  `linux/amd64` they keep `/bzImage`.
+- `tools/guest-image/publish-core.test.ts`: `layoutPlan` for `linux/arm64`
+  writes `org.compass.guest.layer.Image` and no `bzImage` key.
+- `tools/microvm-boot-test/run-core.test.ts`: `guestImageEnv` for
+  `linux/arm64` sets `COMPASS_TEST_GUEST_KERNEL` to `<kernel>/Image`.
+- `go/internal/runtime/microvm/launch_cmdline_test.go`: `serialConsole`
+  returns `ttyS0` for `amd64` and `ttyAMA0` for `arm64`, and errors for
+  `riscv64`. `vmmArgs` given `ttyAMA0` carries `console=ttyAMA0` and no
+  `ttyS0`.
+- A new `guest-image/module-check-tests.nix`, built by the
+  `compass-guest-image:test` task: a config with all eight symbols `=m` or
+  `=y` passes; one symbol `is not set`, or absent, fails with
+  "BUILD-BREAK".
+- `compass-guest-image:eval-arm64`: the kernel-target assertion passes at
+  the pin, and fails when its expected map swaps the two names.
 
 ### Interfaces
 
@@ -643,10 +798,15 @@ RunnerDeployValues.serverCA?:
 // tools/runner-image/assert-public-core.ts (P5)
 export function publicVerdict(result: ProbeResult, ref: string): { ok: true } | { ok: false; message: string };
 // tools/runner-image/assert-public.ts: bun tools/runner-image/assert-public.ts --ref <repo:tag>
-// tools/runner-image/retag-core.ts (P5)
-export function probeArgv(repo: string, sha12: string): string[]; // ["inspect","--no-creds","--raw","docker://<repo>:git-<sha12>"]
+// tools/runner-image/retag-core.ts (P5); retag.ts builds every registry argv with these
+export function inspectArgv(ref: string): string[]; // ["inspect","--no-creds","--raw","docker://<ref>"]
+export function copyArgv(sourceRef: string, destRef: string, destAuthFile: string): string[];
+//   ["copy","--preserve-digests","--src-no-creds","--dest-authfile",<destAuthFile>,"docker://<sourceRef>","docker://<destRef>"]
+// tools/runner-image/publish-core.ts (P5): signature unchanged, argv moves to the copy pair
+export function tagArgs(repo: string, digest: string, sha12: string, authFile: string): string[];
 // tools/agent-image-index/index.ts (P5): authFile leaves the read path
 function inspectCommand(tag: string, ...args: string[]): string[]; // ["skopeo","inspect",...args,"--no-creds",tag]
+// composeLocalIndex writes "{}" to <runnerTemp>/anonymous-auth.json and passes it to every `podman manifest add`
 
 // tools/runner-image/retag-core.ts (P6)
 export function mainTag(firstParentCount: number, commit: string): string; // "main-<n>-<sha12>"
@@ -661,15 +821,30 @@ export async function resolveMainPair(input: {
 //     --server-repo ghcr.io/rigelbuild/compass-server --runner-repo ghcr.io/rigelbuild/compass-runner
 // .github/workflows/release.yml: job tag-main-images
 
-// tools/runner-image/retag-core.ts (P7)
-export type Platform = "linux/amd64" | "linux/arm64";
+// tools/runner-image/retag-core.ts (P7); Platform comes from build-core.ts
 export type ManifestIdentity =
   | { kind: "manifest"; manifestDigest: string; configDigest: string }
   | { kind: "index"; manifestDigest: string; members: { platform: Platform; digest: string }[] };
 export function manifestIdentity(raw: string): ManifestIdentity;
 export function assertCoherent(source: ManifestIdentity, release: ManifestIdentity): void;
-// tools/runner-image/build-core.ts and tools/server-image/build-core.ts (P7)
-export function hostPlatform(arch: NodeJS.Architecture): Platform;
+// tools/runner-image/build-core.ts (P7); tools/server-image/build.ts imports hostPlatform
+export type Platform = "linux/amd64" | "linux/arm64";
+export function hostPlatform(arch: NodeJS.Architecture): Platform; // x64 → linux/amd64, arm64 → linux/arm64, else throws
+export function kernelFileName(platform: Platform): "bzImage" | "Image";
+export function kernelImagePath(kernelDir: string, platform: Platform): string; // <kernelDir>/<kernelFileName>
+export function buildArgs(outputs: RunnerImageOutputs, platform: Platform): Record<string, string>;
+// buildctlArgs(contextDir, outputs, platform, output) passes its platform to buildArgs
+// tools/guest-image/publish-core.ts (P7): replaces ASSET_FILENAMES
+export function assetFilenames(platform: Platform): Readonly<Record<AssetName, string>>;
+export function layoutPlan(
+  assets: Readonly<Record<AssetName, Asset>>,
+  provenance: { revision: string; agentImageDigest: string },
+  platform: Platform,
+): LayoutPlan;
+// tools/microvm-boot-test/run-core.ts (P7)
+export function guestImageEnv(outPaths: readonly string[], platform: Platform): Record<string, string>;
+// tools/microvm-boot-test/run.ts (P7): --build-only realises the guest and VMM attrs,
+//   checks <kernel>/<kernelFileName> exists, and exits 0 without `go test`
 // tools/agent-image-index/index.ts (P7)
 export type PublishInput = { repo: string; sha: string; authFile: string; runnerTemp: string };
 export async function publishImageIndex(input: PublishInput, run: CommandRunner): Promise<PublishResult>;
@@ -682,8 +857,13 @@ func readSuppliedAdminToken(path string) (string, error) // os.OpenFile(path, O_
 // checkSuppliedTokenMode is pure; gid comes from info.Sys().(*syscall.Stat_t).Gid.
 func checkSuppliedTokenMode(mode os.FileMode, gid uint32, held []int) error
 
-// go/internal/stack/materialize.go (P7)
+// go/internal/stack/materialize.go (P7, //go:build unix)
 func selectGuestMember(raw []byte, arch string) (digest string, err error) // index → member digest for runtime.GOARCH
+func guestKernelName(goarch string) string // "Image" for arm64, else "bzImage"; guestAssets' kernel annotationName
+
+// go/internal/runtime/microvm/launch.go (P7, //go:build unix)
+func serialConsole(goarch string) (string, error) // amd64 → "ttyS0", arm64 → "ttyAMA0", else error
+func vmmArgs(cfg BootConfig, consolePath, console string, opts launchOptions) []string // appends "console=<console>"
 ```
 
 ### Deferred follow-ups
@@ -722,4 +902,5 @@ func fetchHTTPS(ctx context.Context, client *http.Client, u, bearer string) ([]b
 - [ ] P6 — Paired `:main-<n>-<sha12>` tags on the head of every main push,
   after P5
 - [ ] P7 — Multi-arch (`linux/amd64`, `linux/arm64`) images in every lane,
-  index-aware retag and tagger, after P6
+  index-aware retag and tagger, per-arch guest kernel file, boot modules and
+  console, arm64 guest build gate, after P6
