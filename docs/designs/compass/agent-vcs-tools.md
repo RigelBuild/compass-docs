@@ -171,20 +171,18 @@ through its own lease and `compass-mirror:` marker, so it is left as is.
    in `forge_authored_artifacts`; comment and review keep the forge key on
    the intent row) and marks the intent done.
 5. When the forge refuses the create, the intent is marked failed. On a
-   timeout, a 5xx, or a failed record, it stays pending.
-6. A retry, or a Server sweep of pending intents older than one minute,
-   looks for the object: a PR by head, a Linear object by id, and a GitHub
-   issue, comment, or review by the marker, listing from the intent's
-   time. A hit is recorded. On a miss, only a create that cannot make a
-   duplicate runs again under the same intent: a PR, because GitHub allows
-   one open PR per head, and a Linear object, because Linear refuses a
-   second create with that id. A GitHub issue, comment, or review is never
-   sent twice while its first outcome is unknown. The retry returns
-   "pending: the Server is still checking the forge; retry later". The
-   sweep keeps looking for one day, then marks the attempt lost: "the
-   create's outcome is unknown; check the forge before creating it again".
-   A lost attempt never resends. A hit before then completes it as done.
-   The DL-206 gap stays exactly the forge-success, pre-record window.
+   timeout, a 5xx, or a failed record, it stays pending. Every state change
+   is conditional on `pending`, so a done intent never turns failed.
+6. A pending intent is never sent again; a create may still be in flight.
+   A retry, or a Server sweep of pending intents older than one minute,
+   only looks for the object: a PR by head, a Linear object by id, and a
+   GitHub issue, comment, or review by the marker, listing from the
+   intent's time. A hit is recorded. A miss returns "pending: the Server is
+   still checking the forge; retry later". The sweep keeps looking for one
+   day, then marks the attempt lost: "the create's outcome is unknown;
+   check the forge before creating it again". A lost attempt never
+   resends. The DL-206 gap stays exactly the forge-success, pre-record
+   window.
 
 `submit_stack` (field 17) takes entries bottom to top. Per entry:
 
@@ -506,9 +504,10 @@ Red → green (`FakeProvider`, T10 fake mirror):
 - A create the forge refused leaves a failed intent, and a same-key retry
   creates; a GitHub create with nothing listed after a day turns lost, and
   a same-key retry returns the lost result with no second create.
-- A GitHub issue create whose response is lost, with the marker not yet
-  listed: the retry returns pending and sends no second create; the sweep
-  records the one issue once it lists.
+- A create of any kind whose response is lost, or still in flight when the
+  sweep runs: the retry and the sweep send no second create; once it lists,
+  the intent is done with one ownership record, and a late refusal cannot
+  turn it failed.
 - An unchanged entry sends no PATCH; an agent-written block is replaced.
 - A mid-stack 429: earlier entries done, that entry failed, later entries
   skipped with no provider call.
