@@ -168,14 +168,17 @@ serve (DL-563).
   `secrets.ResolvedSecret` gains `Owner`, and the handler and fetch mappings copy it.
 - **Container layout.** `Install` writes each owner token to `~/.compass/forge/<host>/<owner>`
   (mode 0600, owner lowercased, written atomically), and deletes owner files that are no longer
-  in the set. Beside them it writes `.default-owner`, which holds the default credential's owner
-  or `*`. A GitHub login cannot start with a dot, so the marker cannot collide with an owner file.
+  in the set. Beside them it writes `.default-owner`, which holds the account login of the
+  installation behind the default credential. For a `*` group the broker sets `owner` to the
+  default installation's login, found by reverse lookup in the resolver's snapshot, so the marker
+  always names one owner. A GitHub login cannot start with a dot, so the marker cannot collide
+  with an owner file.
   `GHHostsScript` is unchanged, so `hosts.yml` holds the default credential.
 - **Helper.** A new command, `compass-forge-credential`, is a static Go binary.
   - `git-credential get` reads git's helper input. With `useHttpPath`, the input carries
     `path=owner/repo.git`. With an owner file, the helper prints `username=x-access-token` and
-    the token. For the default owner, a `*` marker, or a request with no path, it prints nothing,
-    and git falls through to `gh auth git-credential` and `hosts.yml`. For any other owner it
+    the token. For the default owner or a request with no path, it prints nothing, and git
+    falls through to `gh auth git-credential` and `hosts.yml`. For any other owner it
     prints `quit=1` and names the owner on stderr.
   - `token --host H [--repo owner/name]` follows the same rules. A refused owner exits non-zero
     with "no credential for owner X", which jj-vine reports as a token-command failure.
@@ -290,18 +293,18 @@ Interfaces:
 
 ```proto
 // proto/compass/v1/runner.proto, message ResolvedSecret
-string owner = 8;  // set only for a brokered SECRET_KIND_GH: the owner the token is minted for, or "*"
+string owner = 8;  // set only for a brokered SECRET_KIND_GH: login of the installation that minted it
 ```
 
 ```go
 // go/internal/secrets: ResolvedSecret gains
-Owner string // repository owner for a brokered SecretGH, "*" for the wildcard group; "" otherwise
+Owner string // lowercase account login whose installation minted a brokered SecretGH; "" otherwise
 
 // go/internal/forgecred (new)
 func TokenPath(home, host, owner string) string        // home/.compass/forge/<host>/<lowercase owner>
 func DefaultOwnerPath(home, host string) string        // home/.compass/forge/<host>/.default-owner
 func LookupToken(home, host, owner string) (string, bool, error)
-func DefaultOwner(home, host string) (string, bool, error) // "*" for the wildcard group
+func DefaultOwner(home, host string) (string, bool, error) // default installation's login
 func OwnerFromCredentialPath(path string) (string, bool)   // "owner/repo(.git)" -> owner
 
 // go/internal/runtime
@@ -327,7 +330,8 @@ config above, and moves the jj-vine pin to T2. `TestAgentImageGHTokenAuth` in
 
 1. `git credential fill` for `owner-a/x` returns A's token, and for `owner-b/y` B's token.
 2. A fill for a third owner fails, and stderr names that owner.
-3. With a `*` marker, a fill for an owner without a file returns the `hosts.yml` token.
+3. With the marker naming A, a fill for A without an owner file returns the `hosts.yml` token,
+   and a fill for a third owner without a file is refused, also under a wildcard grant.
 4. The jj `tokenCommand` with a project returns that owner's token, and exits non-zero for the
    third owner.
 
@@ -345,6 +349,10 @@ type gitCredentialGroup struct {
 	names []string // leaf names for the mint; nil for "*"
 }
 func gitCredentialScopes(grants []string) ([]gitCredentialGroup, bool) // false only for a malformed grant
+
+// go/internal/forge/installations.go: login of the default installation, for the wire Owner of a
+// "*" group. ErrNoInstallation when the snapshot lacks it.
+func (r *InstallationResolver) DefaultOwner(ctx context.Context) (string, error)
 
 type ownerCredential struct{ owner, key, token string }
 // One credential per group; a rejected group retries with the owner user's grants under the same
