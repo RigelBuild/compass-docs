@@ -265,9 +265,11 @@ too, so T1 carries `ghIssue.PullRequest` through to `forge.Issue`. A
 tracker outage fails the entry as retryable and creates nothing, so no PR
 is ever created against an issue nobody checked.
 
-The tools push the commits as the agent made them. Nothing is squashed or
-rewritten: the bundle holds every own commit, and each PR shows each of
-its commits. Only the PR title and body come from one commit, the
+`vcs_submit` pushes the commits as the agent has them. It never squashes
+or rewrites: the bundle holds every own commit, and each PR shows each of
+its commits. `vcs_sync` (D4) is the one rewrite: its rebase keeps each
+commit's content and order but gives it a new id and parent. Only the PR
+title and body come from one commit, the
 segment's first, `roots(<below>..<bookmark>)`. The title is its subject
 plus `(RIG-12)`; the body is its description plus `Refs <issue>`. Only a
 first commit takes `sections`, one per `.github/PULL_REQUEST_TEMPLATE.md`
