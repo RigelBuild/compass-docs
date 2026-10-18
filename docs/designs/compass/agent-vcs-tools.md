@@ -158,7 +158,8 @@ through its own lease and `compass-mirror:` marker, so it is left as is.
    `<call key>:<head_ref>`.
 2. A retry with the same key gets the existing intent back, before any
    forge call. A done intent returns its object. A pending one runs step 6
-   first.
+   first. A failed one is replaced by a new intent, and the create runs
+   again.
 3. The create carries the intent id, a UUID v4. A GitHub body ends with
    `<!-- compass:write <id> -->`, as `mirror.WithMarker` ends a mirror
    post, and the Server strips any such marker from agent text first. On
@@ -173,11 +174,15 @@ through its own lease and `compass-mirror:` marker, so it is left as is.
 6. A retry, or a Server sweep of pending intents older than one minute,
    looks for the object: a PR by head, a Linear object by id, and a GitHub
    issue, comment, or review by the marker, listing from the intent's
-   time. A hit is recorded. On a miss, a retry sends the create again
-   under the same intent id. Linear refuses a second create with that id.
-   If GitHub had not yet listed the first one, both objects carry the
-   marker, and the sweep records each, so neither is unowned. The sweep
-   marks an intent failed after one hour with no hit.
+   time. A hit is recorded. On a miss, only a create that cannot make a
+   duplicate runs again under the same intent: a PR, because GitHub allows
+   one open PR per head, and a Linear object, because Linear refuses a
+   second create with that id. A GitHub issue, comment, or review is never
+   sent twice while its first outcome is unknown. The retry returns
+   "pending: the Server is still checking the forge; retry later". The
+   sweep marks the intent failed after one hour with no hit, and only then
+   can the key create again. Failed intents stay searched for a day; a late
+   hit is still recorded on that intent, so a slow listing loses nothing.
 
 `submit_stack` (field 17) takes entries bottom to top. Per entry:
 
@@ -494,6 +499,9 @@ Red → green (`FakeProvider`, T10 fake mirror):
   record; an agent-written `compass:write` marker is stripped.
 - A create the forge refused leaves a failed intent; a pending intent with
   nothing on the forge after one hour turns failed.
+- A GitHub issue create whose response is lost, with the marker not yet
+  listed: the retry returns pending and sends no second create; the sweep
+  records the one issue once it lists.
 - An unchanged entry sends no PATCH; an agent-written block is replaced.
 - A mid-stack 429: earlier entries done, that entry failed, later entries
   skipped with no provider call.
