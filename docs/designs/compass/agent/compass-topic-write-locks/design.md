@@ -2,7 +2,7 @@
 
 Tracker: RIG-1714. Freezes on merge.
 
-Builds on: [Zulip threading model](https://github.com/RigelBuild/compass/blob/main/docs/designs/server/compass-zulip-threading-model/design.md), [inbound batching](https://github.com/RigelBuild/compass/blob/main/docs/designs/agent/compass-agent-inbound-batching/design.md) (DL-401 to DL-405), [agent comms tools](https://github.com/RigelBuild/compass/blob/main/docs/designs/agent/compass-agent-comms-tools/design.md), [manager role taxonomy](https://github.com/RigelBuild/compass/blob/main/docs/designs/agent/compass-manager-role-taxonomy/design.md).
+Builds on: [Zulip threading model](../../server/compass-zulip-threading-model/design.md), [inbound batching](../compass-agent-inbound-batching/design.md) (DL-401 to DL-405), [agent comms tools](../compass-agent-comms-tools/design.md), [manager role taxonomy](../compass-manager-role-taxonomy/design.md).
 
 Ledger-impact: adds `docs/designs/decisions/agent/DL-472.md` to `DL-476.md` for the stale-post check that replaces the proposed topic write lock. All five rows read `Active (proposed, pending Matt, 2026-10-11)` until the load-bearing Open Questions they depend on are ruled.
 
@@ -21,7 +21,7 @@ The property that matters is the last one: **an agent must not post into a topic
 - **Agent tools.** `comms_post_message`, `comms_post_ask` and leg 2 of `comms_dm` (`packages/compass-agent/src/comms.ts`) send a `PostMessageRequest` that names the channel and topic: `topic: { case: "topicName", value: params.topic }`. The agent keeps no record of what it has read per topic.
 - **When a message reaches the model.** A delivered message enters context at turn start (`CompassAgent.#flushTurnEnd`, `packages/compass-agent/src/agent.ts`). A deliver that arrives during a turn waits: "a mid-turn deliver waits for the `agent_end` flush". A mention during a turn is a steer: `this.#session.agent.steer(agentMsg)`. The SDK (`@oh-my-pi/pi-agent-core`, `agent-loop.ts`) injects queued steers only at the next model-call boundary and calls `(message as CommittableAsideMessage)[ASIDE_MESSAGE_COMMIT]?.();` as each one enters context. The steer ack does not wait for that: "`agent.steer` is synchronous void, so the ack rides the next microtask."
 - **Tool batches.** The comms tools set no `concurrency`, so they are shared. The SDK scheduler runs `const start = concurrency === "exclusive" ? Promise.all([lastExclusive, ...sharedTasks]) : lastExclusive;`, so a later call in a batch can start after an earlier call returned. The model wrote every call in the batch before it saw any result.
-- **Settle hold.** Delivery holds an agent-authored post until its author's session settles ([settle turn order](https://github.com/RigelBuild/compass/blob/main/docs/designs/infra/runtime/compass-managed-settle-turn-order/design.md), DL-382). Human posts go at once (`Consumer.onMessagePosted`, `go/internal/delivery`: "Human-authored: settled at post, deliver immediately"). An agent can see a newer human message before an older peer reply.
+- **Settle hold.** Delivery holds an agent-authored post until its author's session settles ([settle turn order](../../infra/runtime/compass-managed-settle-turn-order/design.md), DL-382). Human posts go at once (`Consumer.onMessagePosted`, `go/internal/delivery`: "Human-authored: settled at post, deliver immediately"). An agent can see a newer human message before an older peer reply.
 - **Shared state.** Servers scale horizontally, and Postgres is the only store of record. Hub memory is an instance-local cache. Comms has no typing indicator.
 
 ### The change
@@ -122,7 +122,7 @@ DL-475.
 
 DL-476. Every agent, whatever its role. The issue says Managers, but the choice is really agents versus humans:
 
-- The mesh has no worker role: workers are subagents with no account, and every account node spawns as supervisor, owner or manager ([manager role taxonomy](https://github.com/RigelBuild/compass/blob/main/docs/designs/agent/compass-manager-role-taxonomy/design.md)). Owners and supervisors can double-post the same way.
+- The mesh has no worker role: workers are subagents with no account, and every account node spawns as supervisor, owner or manager ([manager role taxonomy](../compass-manager-role-taxonomy/design.md)). Owners and supervisors can double-post the same way.
 - A role gate would add a role lookup to the post transaction. It would also leave legacy rows with an empty `Role` undefined.
 
 The web UI and the CLI never set the view fields, so **humans are never checked and never blocked**. The public `PostMessage` honors the fields on purpose, so a human client could later warn "someone replied while you typed". A human's post does count as unseen for an agent. Both points are open questions.
