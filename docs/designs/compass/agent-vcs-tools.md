@@ -156,10 +156,10 @@ through its own lease and `compass-mirror:` marker, so it is left as is.
    `broker.idempotencyKey(toolCallId)` for issue and PR creates, and T7
    sends it for comments and reviews too. A `submit_stack` entry uses
    `<call key>:<head_ref>`.
-2. A retry with the same key gets the existing intent back, before any
-   forge call. A done intent returns its object. A pending one runs step 6
-   first. A failed one returns its failure; a fresh tool call has a fresh
-   key and so a fresh intent.
+2. Each row is one attempt. A call with the same key reads its newest
+   attempt before any forge call: done returns its object, pending runs
+   step 6 first, and failed starts a new attempt, so a retry after a
+   failed create re-attempts (DL-206).
 3. The create carries the intent id, a UUID v4. A GitHub body ends with
    `<!-- compass:write <id> -->`, as `mirror.WithMarker` ends a mirror
    post, and the Server strips any such marker from agent text first. On
@@ -180,9 +180,10 @@ through its own lease and `compass-mirror:` marker, so it is left as is.
    second create with that id. A GitHub issue, comment, or review is never
    sent twice while its first outcome is unknown. The retry returns
    "pending: the Server is still checking the forge; retry later". The
-   sweep marks the intent failed after one hour with no hit. Failed intents
-   stay searched for a day; a late hit is still recorded on that intent, so
-   a slow listing loses nothing.
+   sweep marks the attempt failed after one hour with no hit. Failed
+   attempts stay searched for a day. A late hit marks that attempt `late`
+   and writes its ownership record with no request key. A slow listing can
+   then leave two objects, but each has an owner.
 
 `submit_stack` (field 17) takes entries bottom to top. Per entry:
 
@@ -389,7 +390,7 @@ message SubmitStackRequest {
   string repo = 1;
   repeated StackEntry entries = 2;  // bottom to top
   string ready_head_ref = 3;        // empty = no entry leaves draft
-  bytes bundle = 4;                 // git bundle of the own commits (OQ-8a)
+  bytes bundle = 4;                 // git bundle of the own commits (OQ-8)
 }
 message RetireHeadRequest {
   string repo = 1;
@@ -442,7 +443,7 @@ type WriteIntent struct {
 	RequestKey     string // the call's client_request_id; required
 }
 
-// Same (agent, RequestKey): returns the stored row. A PR intent: ErrConflict when another agent holds the head.
+// Same (agent, RequestKey) with a pending or done row: returns it; otherwise inserts a new attempt. A PR intent: ErrConflict when another agent holds the head.
 func (s *Store) RecordWriteIntent(ctx context.Context, in WriteIntent) (WriteIntent, error)
 // ErrNotFound on a miss.
 func (s *Store) PRIntentForHead(ctx context.Context, provider ForgeProvider, host, repo, headRef string) (WriteIntent, error)
@@ -455,15 +456,17 @@ func (s *Store) AuthoredArtifactByCoordinateFold(ctx context.Context, provider F
 ```
 
 Table `forge_write_intents` in `migrations/0001_init.sql`: PK
-`(tenant_id, id)`; state pending, done, or failed; `forge_key` and
+`(tenant_id, id)`; state pending, done, failed, or late; `forge_key` and
 `created_at`; a unique index on `(tenant_id, agent_account_id,
 client_request_id)`, and one on `(tenant_id, forge_provider, forge_host,
-repo, head_ref)` for PR rows; the `forge_authored_artifacts` agent/owner
-FK; RLS. A done comment or review row is that object's ownership record.
+repo, head_ref)` for PR rows, both only over pending and done rows, so a
+failed attempt never blocks the next one; the `forge_authored_artifacts` agent/owner
+FK; RLS. A done or late comment or review row is that object's ownership record.
 sqlc queries go in `queries/forge_write_intents.sql`. `RecordWriteIntent`
 commits on its own. Existing rows need no backfill. Red → green
 (`pgtest`): another agent's PR intent for a head conflicts; the same key
-returns the same row with the same id; an empty key is refused; the same
+returns the same row with the same id, and after a failed attempt inserts
+a new one for that key and head; an empty key is refused; the same
 repo and head on two hosts are two
 intents; complete writes the row and the state together or neither;
 pending lists only old pending rows; mixed case finds the authored row;
