@@ -6,25 +6,8 @@
 
 **Named decisions this record introduces:** D1–D10, inline in
 [Design](#design), ledgered as DL-539 to DL-547 and DL-560 in
-`decisions/server/`.
-
-## Open Questions
-
-- **OQ-13 — arm64 microVM boot proof.** P7 builds the arm64 guest and
-  unit-tests its kernel name and console, but no GitHub-hosted arm64 runner
-  exposes `/dev/kvm`, so no CI job can boot it. No P7 code change depends
-  on the answer; only the arm64 Runner support claim does.
-  1. No pre-merge arm64 boot. The Runner's startup boot canary
-     (`runMicroVMPreflight`, `go/cmd/compass-runner/main.go`) fails closed
-     on a node that cannot boot the guest. The Runner README says amd64
-     only until `compass-go:test-microvm` passes on an arm64 KVM host with
-     GICv3.
-  2. A self-hosted arm64 bare-metal runner for the `microvm` job. It proves
-     every PR, but GitHub says self-hosted runners
-     ["should almost never be used for public repositories"](https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners),
-     because a fork PR can run code on the host.
-
-  **Recommendation:** option 1. P7 is written against it.
+`decisions/server/`. The OQ-13 ruling is DL-577. DL-545 (D7) also covers
+`serverName` (P9).
 
 ## Resolved decisions
 
@@ -54,6 +37,15 @@ Question numbers match the review threads on this record.
   is not a product change.
 - **OQ-12 — Multi-arch images.** Every Compass image is published for
   `linux/amd64` and `linux/arm64` (D10, P7).
+- **OQ-13 — arm64 microVM boot proof.** No pre-merge arm64 boot; the P7
+  arm64 build gate is the only pre-merge proof, and P7 is unchanged. No
+  GitHub-hosted arm64 runner exposes `/dev/kvm`. The Runner's startup boot
+  canary (`runMicroVMPreflight`, `go/cmd/compass-runner/main.go`) fails
+  closed on a node that cannot boot the guest, and the Runner README says
+  amd64 only until an arm64 boot passes (P7). A self-hosted arm64 runner was
+  rejected: GitHub says self-hosted runners
+  ["should almost never be used for public repositories"](https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners)
+  (DL-577).
 
 ## Problem / Intent
 
@@ -107,6 +99,11 @@ and the [OSS-core boundary record](meta/oss-core-managed-boundary/design.md).
 - **Runner.** `renderRunnerManifests` (`tools/runner-manifests/render-core.ts`)
   takes an absolute `https` `serverAddr`, and now `serverCA` and
   `egressAllow`. The hub holds one Runner (`go/internal/runnerhub/hub.go`).
+- **Runner TLS name.** `NewCATrustClient` (`go/internal/runner/tls.go`) sets
+  only `RootCAs` and `MinVersion`, and without `--ca` the Runner uses
+  `http.DefaultClient`. Go's `addTLS` (`net/http/transport.go`) fills an
+  empty `ServerName` with the dialed host, so the Runner always checks the
+  certificate against the `--server` host.
 - **Agent egress.** The microVM arms a default-deny firewall.
   `--egress-allow` (`go/cmd/compass-runner/main.go`) is the only way to open
   a host. `isValidHost` (`go/internal/runtime/host.go`) admits DNS names and
@@ -225,8 +222,10 @@ ingress may terminate it: the door refuses cleartext, and the Runner's bidi
 stream needs h2 end to end.
 
 - **Certificate.** The operator supplies a `kubernetes.io/tls` Secret whose
-  SANs cover the in-cluster name and any external name. A private CA works;
-  the Runner's `serverCA` value and the client `--ca` carry it.
+  SANs cover the in-cluster name and any external name. A certificate that
+  names only the public host also works when the Runner sets `serverName`
+  (P9). A private CA works; the Runner's `serverCA` value and the client
+  `--ca` carry it.
 - **Renewal.** The door loads its keypair once, so a renewed certificate
   takes effect on restart (see [Known limitation](#known-limitation)).
 - **Services.** Service `compass-server` (ClusterIP) maps 443 to 50052. An
@@ -249,6 +248,8 @@ stream needs h2 end to end.
   then needs a re-render and a Server rollout. An issuer with anonymous
   discovery keeps `jwksURI`.
 - **CA.** `serverCA` mounts the CA and sets `COMPASS_RUNNER_CA`.
+- **Server name.** `serverName` sets `COMPASS_SERVER_NAME`, the name the
+  Runner checks on the certificate (P9).
 - **Egress.** `egressAllow` renders one `--egress-allow=<hosts>` arg. The
   renderer applies the `isValidHost` grammar, so `host:port` fails at render
   time. A session needs the provider API host, `github.com` and
@@ -410,7 +411,9 @@ restart: it re-dials, re-enrolls with the hub, and keeps its microVMs.
 - **PRs.** Each task is one compass PR, red then green. P2 merges after P4,
   because its output boots only with P4. P5, P6 and P7 form one stack in
   that order: all three edit `tools/runner-image/` and `release.yml`. P8
-  edits only `tools/runner-manifests/` and is independent of the rest.
+  edits only `tools/runner-manifests/`. P9 edits the Runner's TLS client,
+  its flags and `tools/runner-manifests/`, but no line that P8 edits. P8 and
+  P9 are independent of the rest.
 - **Images.** Digest only. Renderers reject tags, as `assertRunnerImageDigest`
   does. Every image is an OCI index of `linux/amd64` and `linux/arm64` once
   P7 lands.
@@ -426,7 +429,8 @@ restart: it re-dials, re-enrolls with the hub, and keeps its microVMs.
 - **Lanes.** TypeScript is Bun with `bun:test`. Go DB tests use the `pgtest`
   build tag.
 - **Spec impact.** P4 changes the requirement "The network door mints and
-  persists a bootstrap admin token" in `docs/specs/product/compass.md`. No
+  persists a bootstrap admin token" in `docs/specs/product/compass.md`. P9
+  adds a `compass-runner --server-name` requirement to the same file. No
   other task changes a spec.
 
 ### Order
@@ -435,6 +439,7 @@ restart: it re-dials, re-enrolls with the hub, and keeps its microVMs.
 P1 server image (#2355, merged) ─┐
 P3 runner values (#2360, merged) ┤
 P8 runner volume root ───────────┼──► operators render and deploy
+P9 runner TLS server name ───────┤
 P4 admin token (Go) ──► P2 server renderer (#2363) ┘
 P5 anonymous reads ──► P6 paired main tags ──► P7 multi-arch images
 Deferred: F1 door TLS reload, F2 tokenFile
@@ -841,6 +846,76 @@ Tests, red first, in `tools/runner-manifests/render-core.test.ts`:
 The Runner renderer has no golden file. `tools/server-manifests/golden.yaml`
 holds no Runner object, so it does not change.
 
+### P9 — Runner TLS server name
+
+An operator's certificate may name only the public host, while
+`serverAddr` is the in-cluster Service (D6). The Runner then checks the
+certificate against the Service name and fails with `x509.HostnameError`
+(see [Ground truth](#ground-truth), Runner TLS name). The Server needs no
+change: the door holds one keypair (`loadNetworkTLS`,
+`go/server/network_door.go`), and Go's `getCertificate`
+(`crypto/tls/common.go`) returns a lone certificate whatever the SNI.
+
+`compass-runner` gains `--server-name`, default `$COMPASS_SERVER_NAME`. It
+sets `tls.Config.ServerName` in `go/internal/runner/tls.go`: the name the
+Runner checks on the certificate and sends as SNI. It changes no trust
+root, so the certificate must still chain to `--ca` or the host roots. A new
+`runner.NewServerClient(caPath, serverName)` builds the client. An empty
+`caPath` leaves `RootCAs` nil, which means the host roots, so the setting
+also works without `--ca`. A non-empty `caPath` is read with the
+`NewCATrustClient` errors. The client keeps TLS 1.3 minimum and HTTP/1.1
+plus HTTP/2. Like the `--ca` client today, it reads no proxy variables.
+`NewCATrustClient` keeps its contract and its CLI and e2e callers; both
+functions share one transport builder.
+
+In `go/cmd/compass-runner/main.go`, a new `runnerHTTPClient` replaces the
+`--ca` block. It resolves both values with `orEnv`. When both are empty, it
+returns `http.DefaultClient`, as `httpClientFor` (`go/cmd/compass/client.go`)
+does. `Dial` (`go/internal/runner/runner.go`) already uses that client for a
+nil one, so with no server name the behaviour is unchanged.
+
+The Runner renderer gains an optional `serverName`. It uses the
+`isValidEgressHost` grammar, so a port or a URL fails at render time. When
+set, the container gets `COMPASS_SERVER_NAME`, placed after
+`COMPASS_RUNNER_CA`. When unset, the output is unchanged. In
+`tools/runner-manifests/README.md`, "Two optional values:" becomes three.
+The new `serverName` bullet says: set it when `serverAddr` is the in-cluster
+Service and the certificate names only a public host.
+
+P9 is independent of P2 and P4. It shares three files in
+`tools/runner-manifests/` with P8, but no lines: P8 edits the
+`COMPASS_MICROVM_VOLUME_ROOT` entry, the runtime-settings test and the
+README's node prerequisites.
+
+Spec impact: under `## Runner enrollment CLI` in
+`docs/specs/product/compass.md`, a new requirement follows the `--ca`
+requirement: "`compass-runner --server-name` sets the name checked on the
+Server's certificate". The Runner SHALL check the certificate against that
+name instead of the `--server` host, and SHALL trust the same roots. When it
+is unset, the Runner SHALL check the `--server` host. Its scenario is the
+first test below.
+
+Tests, red first:
+
+- `go/internal/runner/tls_test.go`, new `TestServerNameOverride`: a
+  `certgen` certificate for `compass.example.test` only, served by
+  `startTLSRunnerServer` at `127.0.0.1`, with that certificate as `caPath`.
+  `NewServerClient(caPath, "compass.example.test")` enrolls.
+  `NewServerClient(caPath, "")` fails at the handshake with
+  `x509.HostnameError`.
+- `NewServerClient("", "compass.example.test")` has a nil `RootCAs`, that
+  `ServerName` and `MinVersion` TLS 1.3. A missing or non-PEM `caPath` fails
+  with the `NewCATrustClient` messages.
+- `go/cmd/compass-runner/main_test.go`, new
+  `TestServerNameFlagAndEnvironmentFallback`, shaped like
+  `TestAgentBatchingFlagAndEnvironmentFallback`: both values unset returns
+  `http.DefaultClient`; `$COMPASS_SERVER_NAME` alone gives a client with
+  that `ServerName`; the flag overrides the environment.
+- `tools/runner-manifests/render-core.test.ts`, new
+  `describe("serverName")` after `describe("serverCA")`: unset renders no
+  `COMPASS_SERVER_NAME`; set renders it; `""`, `compass.example.test:443`
+  and `https://compass.example.test` throw "serverName".
+
 ### Interfaces
 
 ```ts
@@ -888,6 +963,9 @@ RunnerDeployValues.serverCA?:
 const SESSION_MOUNT_PATH = "/var/lib/compass/sessions"; // unchanged: session-volumes mountPath
 const SESSION_VOLUME_ROOT = `${SESSION_MOUNT_PATH}/volumes`; // new: COMPASS_MICROVM_VOLUME_ROOT value
 // RunnerDeployValues.hostPaths is unchanged; the operator creates <sessionVolumeRoot>/volumes with the project quota
+
+// tools/runner-manifests/render-core.ts (P9)
+RunnerDeployValues.serverName?: string; // isValidEgressHost grammar; set → env COMPASS_SERVER_NAME after COMPASS_RUNNER_CA
 
 // tools/runner-image/assert-public-core.ts (P5)
 export function publicVerdict(result: ProbeResult, ref: string): { ok: true } | { ok: false; message: string };
@@ -965,6 +1043,15 @@ func guestKernelName(goarch string) string // "Image" for arm64, else "bzImage";
 // go/internal/runtime/microvm/launch.go (P7, //go:build unix)
 func serialConsole(goarch string) (string, error) // amd64 → "ttyS0", arm64 → "ttyAMA0", else error
 func vmmArgs(cfg BootConfig, consolePath, console string, opts launchOptions) []string // appends "console=<console>"
+
+// go/internal/runner/tls.go (P9, //go:build unix)
+// caPath "" → RootCAs nil (host roots), else the --ca pool with NewCATrustClient's errors;
+// serverName "" → Go checks the dialed host, else tls.Config.ServerName; TLS 1.3, HTTP/1.1 and HTTP/2
+func NewServerClient(caPath, serverName string) (*http.Client, error)
+
+// go/cmd/compass-runner/main.go (P9, //go:build unix): flag --server-name, default $COMPASS_SERVER_NAME
+// orEnv on both values; both empty → http.DefaultClient, else runner.NewServerClient
+func runnerHTTPClient(caFlag, serverNameFlag string) (connecthttp.HTTPClient, error)
 ```
 
 ### Deferred follow-ups
@@ -1008,3 +1095,6 @@ func fetchHTTPS(ctx context.Context, client *http.Client, u, bearer string) ([]b
 - [ ] P8 — Runner renderer sets `COMPASS_MICROVM_VOLUME_ROOT` to
   `/var/lib/compass/sessions/volumes`, with the README quota layout;
   independent of P2
+- [ ] P9 — Runner `--server-name` (`$COMPASS_SERVER_NAME`) sets
+  `tls.Config.ServerName`, with or without `--ca`; renderer value
+  `serverName`, README and spec requirement; independent of P2 and P4
