@@ -158,8 +158,8 @@ through its own lease and `compass-mirror:` marker, so it is left as is.
    `<call key>:<head_ref>`.
 2. A retry with the same key gets the existing intent back, before any
    forge call. A done intent returns its object. A pending one runs step 6
-   first. A failed one is replaced by a new intent, and the create runs
-   again.
+   first. A failed one returns its failure; a fresh tool call has a fresh
+   key and so a fresh intent.
 3. The create carries the intent id, a UUID v4. A GitHub body ends with
    `<!-- compass:write <id> -->`, as `mirror.WithMarker` ends a mirror
    post, and the Server strips any such marker from agent text first. On
@@ -180,9 +180,9 @@ through its own lease and `compass-mirror:` marker, so it is left as is.
    second create with that id. A GitHub issue, comment, or review is never
    sent twice while its first outcome is unknown. The retry returns
    "pending: the Server is still checking the forge; retry later". The
-   sweep marks the intent failed after one hour with no hit, and only then
-   can the key create again. Failed intents stay searched for a day; a late
-   hit is still recorded on that intent, so a slow listing loses nothing.
+   sweep marks the intent failed after one hour with no hit. Failed intents
+   stay searched for a day; a late hit is still recorded on that intent, so
+   a slow listing loses nothing.
 
 `submit_stack` (field 17) takes entries bottom to top. Per entry:
 
