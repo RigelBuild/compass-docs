@@ -158,8 +158,9 @@ through its own lease and `compass-mirror:` marker, so it is left as is.
    `<call key>:<head_ref>`.
 2. Each row is one attempt. A call with the same key reads its newest
    attempt before any forge call: done returns its object, pending runs
-   step 6 first, and failed starts a new attempt, so a retry after a
-   failed create re-attempts (DL-206).
+   step 6 first, lost returns its result, and failed starts a new attempt.
+   Only a forge refusal fails an attempt, so a retry after a failed create
+   re-attempts (DL-206) and never duplicates.
 3. The create carries the intent id, a UUID v4. A GitHub body ends with
    `<!-- compass:write <id> -->`, as `mirror.WithMarker` ends a mirror
    post, and the Server strips any such marker from agent text first. On
@@ -180,10 +181,10 @@ through its own lease and `compass-mirror:` marker, so it is left as is.
    second create with that id. A GitHub issue, comment, or review is never
    sent twice while its first outcome is unknown. The retry returns
    "pending: the Server is still checking the forge; retry later". The
-   sweep marks the attempt failed after one hour with no hit. Failed
-   attempts stay searched for a day. A late hit marks that attempt `late`
-   and writes its ownership record with no request key. A slow listing can
-   then leave two objects, but each has an owner.
+   sweep keeps looking for one day, then marks the attempt lost: "the
+   create's outcome is unknown; check the forge before creating it again".
+   A lost attempt never resends. A hit before then completes it as done.
+   The DL-206 gap stays exactly the forge-success, pre-record window.
 
 `submit_stack` (field 17) takes entries bottom to top. Per entry:
 
@@ -440,37 +441,39 @@ type WriteIntent struct {
 	AgentAccountID AccountID
 	OwnerUserID    AccountID
 	SessionID      string
-	RequestKey     string // the call's client_request_id; required
+	RequestKey     string     // the call's client_request_id; required
+	State          WriteState // pending, done, failed, lost
 }
 
-// Same (agent, RequestKey) with a pending or done row: returns it; otherwise inserts a new attempt. A PR intent: ErrConflict when another agent holds the head.
+// Same (agent, RequestKey): returns the newest pending, done, or lost attempt; after a failed one inserts a new attempt. A PR intent: ErrConflict when another agent holds the head.
 func (s *Store) RecordWriteIntent(ctx context.Context, in WriteIntent) (WriteIntent, error)
 // ErrNotFound on a miss.
 func (s *Store) PRIntentForHead(ctx context.Context, provider ForgeProvider, host, repo, headRef string) (WriteIntent, error)
-// One transaction: the ownership row (issue, PR) or the forge key (comment, review), then done.
+// One transaction: the ownership row (issue, PR) or the forge key (comment, review), then done. Pending rows only.
 func (s *Store) CompleteWriteIntent(ctx context.Context, id string, a *AuthoredArtifact, forgeKey string) error
-func (s *Store) FailWriteIntent(ctx context.Context, id string) error
+// Refusal: failed. Unknown after a day: lost.
+func (s *Store) EndWriteIntent(ctx context.Context, id string, state WriteState) error
 func (s *Store) PendingWriteIntents(ctx context.Context, olderThan time.Time, limit int) ([]WriteIntent, error)
 // Folds GitHub case; the oldest row wins.
 func (s *Store) AuthoredArtifactByCoordinateFold(ctx context.Context, provider ForgeProvider, host, repo string, kind ForgeArtifactKind, number uint64) (AuthoredArtifact, error)
 ```
 
 Table `forge_write_intents` in `migrations/0001_init.sql`: PK
-`(tenant_id, id)`; state pending, done, failed, or late; `forge_key` and
+`(tenant_id, id)`; state pending, done, failed, or lost; `forge_key` and
 `created_at`; a unique index on `(tenant_id, agent_account_id,
-client_request_id)`, and one on `(tenant_id, forge_provider, forge_host,
-repo, head_ref)` for PR rows, both only over pending and done rows, so a
-failed attempt never blocks the next one; the `forge_authored_artifacts` agent/owner
-FK; RLS. A done or late comment or review row is that object's ownership record.
-sqlc queries go in `queries/forge_write_intents.sql`. `RecordWriteIntent`
-commits on its own. Existing rows need no backfill. Red → green
-(`pgtest`): another agent's PR intent for a head conflicts; the same key
-returns the same row with the same id, and after a failed attempt inserts
-a new one for that key and head; an empty key is refused; the same
-repo and head on two hosts are two
-intents; complete writes the row and the state together or neither;
-pending lists only old pending rows; mixed case finds the authored row;
-two rows that differ only in case return the oldest.
+client_request_id)` over every state but failed, and one on
+`(tenant_id, forge_provider, forge_host, repo, head_ref)` for pending and
+done PR rows; the `forge_authored_artifacts` agent/owner FK; RLS. A done
+comment or review row is that object's ownership record. sqlc queries go
+in `queries/forge_write_intents.sql`. `RecordWriteIntent` commits on its
+own. Existing rows need no backfill. Red → green (`pgtest`): another
+agent's PR intent for a head conflicts; the same key returns the same row
+with the same id; after a failed attempt it inserts a new one for that key
+and head; after a lost one it returns the lost row; an empty key is
+refused; the same repo and head on two hosts are two intents; complete
+writes the row and the state together or neither, and refuses a non-pending
+row; pending lists only old pending rows; mixed case finds the authored
+row; two rows that differ only in case return the oldest.
 
 ### T5 — Server arms and write intents
 
@@ -500,8 +503,9 @@ Red → green (`FakeProvider`, T10 fake mirror):
   lost, or the store write after it fails: a retry with the same key, or
   the sweep alone, ends with one object on the forge and one ownership
   record; an agent-written `compass:write` marker is stripped.
-- A create the forge refused leaves a failed intent; a pending intent with
-  nothing on the forge after one hour turns failed.
+- A create the forge refused leaves a failed intent, and a same-key retry
+  creates; a GitHub create with nothing listed after a day turns lost, and
+  a same-key retry returns the lost result with no second create.
 - A GitHub issue create whose response is lost, with the marker not yet
   listed: the retry returns pending and sends no second create; the sweep
   records the one issue once it lists.
