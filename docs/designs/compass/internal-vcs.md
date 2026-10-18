@@ -20,9 +20,10 @@ a lease-guarded force-push on base moves only.
 
 **Named decisions this record introduces:** D1–D4 in [Decisions](#decisions).
 
-Length: the record is about 3,100 prose words. The excess over the
+Length: the record is about 3,400 prose words. The excess over the
 2,500-word target sits in Open Questions (about 900 words), which shrinks to
-a short Resolved decisions section once Matt rules.
+a short Resolved decisions section once Matt rules. The rest is in T2: the
+pack, lease, repo-name, and cost rules buy a store that fails closed.
 
 ## Open Questions
 
@@ -202,18 +203,19 @@ ride `ForgeCallRequest`, which reuses the runner relay
   - Refused: a parent that is neither trunk-reachable nor a stored version.
   - Refused: an author or committer that is not the agent identity.
 - **Agent identity (assumption).** The name is the agent handle and the
-  email is `<handle>@agents.invalid`. Accounts have no email field
-  (`go/internal/store/accounts.go`). The checkout header carries both, and
-  the tool writes them to repo config. A Server `git replay` sets
-  `GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` to the identity of the
-  agent that owns the change.
+  email is `<handle>@agents.invalid`. `Account` in
+  `go/internal/store/types.go` has no email: its fields are `ID`, `Handle`,
+  `DisplayName`, `User`, `Agent`, and `System`. The checkout header carries
+  both values, and the tool writes them to repo config. A Server
+  `git replay` sets `GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` to the
+  identity of the agent that owns the change.
 - **Caps.** Each cap refuses rather than truncates, and each is set by a
   flag:
   - one blob ≤ 15 MiB (`MAX_SESSION_BLOB_BYTES` in
     `packages/compass-agent/src/session-blobs.ts`);
   - one put batch ≤ 15 MiB;
   - ≤ 2,000 entries per change;
-  - pack bytes per session per day;
+  - pack bytes per session and per Server, per day;
   - the T10 per-repo and total volume caps.
 - A finding names a path and a rule id, never the matched text.
 - Red → green: failing tests land first. Use temp repos, `pgtest`,
@@ -230,21 +232,24 @@ Interfaces: `go/internal/store/migrations/0004_vcs_changes.sql` and
 trigger all copy `0002_agent_config_overlays.sql`.
 
 ```sql
+ALTER TABLE accounts ADD CONSTRAINT accounts_tenant_id_key UNIQUE (tenant_id, id);
 CREATE TABLE vcs_changes (
   id BIGSERIAL PRIMARY KEY,
   tenant_id TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
     REFERENCES tenants (id) ON DELETE RESTRICT,
   repo TEXT NOT NULL,
   change_id TEXT NOT NULL,
-  agent_account_id TEXT NOT NULL REFERENCES accounts (id) ON DELETE RESTRICT,
+  agent_account_id TEXT NOT NULL,
   version INTEGER NOT NULL DEFAULT 0,
   closed_at TIMESTAMPTZ,            -- landed or retired; refs deleted
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (tenant_id, id),
+  FOREIGN KEY (tenant_id, agent_account_id) REFERENCES accounts (tenant_id, id) ON DELETE RESTRICT
 );
 CREATE UNIQUE INDEX vcs_changes_key ON vcs_changes (tenant_id, lower(repo), change_id);
 CREATE TABLE vcs_versions (
-  change_row BIGINT NOT NULL REFERENCES vcs_changes (id) ON DELETE RESTRICT,
+  change_row BIGINT NOT NULL,
   version INTEGER NOT NULL,
   tenant_id TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
     REFERENCES tenants (id) ON DELETE RESTRICT,
@@ -254,7 +259,8 @@ CREATE TABLE vcs_versions (
   pushed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (change_row, version),
-  UNIQUE (change_row, commit_id)
+  UNIQUE (change_row, commit_id),
+  FOREIGN KEY (tenant_id, change_row) REFERENCES vcs_changes (tenant_id, id) ON DELETE RESTRICT
 );
 ```
 
@@ -291,7 +297,8 @@ Red → green:
 - two appends at one `expect` race, and one gets `ErrVersionConflict`;
 - another tenant reads nothing;
 - a repo name in another case finds the same row;
-- `VcsReadableCommit` is false for another owner's change.
+- `VcsReadableCommit` is false for another owner's change;
+- a row naming another tenant's account or change fails its foreign key.
 
 ### T2 — the mirror becomes the store
 
@@ -305,8 +312,10 @@ type TreeEntry struct {
 	Blob string // hex object id; "" when Mode is 0
 }
 type Identity struct{ Name, Email string }
+type RefUpdate struct{ Old, New string } // Old "": ref must not exist; New "": delete
 type Mirror interface {
-	Push(ctx context.Context, repo string, refs map[string]string) error // lease on old commit
+	// Push runs git push --force-with-lease=<ref>:<Old> for each ref.
+	Push(ctx context.Context, repo string, refs map[string]RefUpdate) error
 	Rebase(ctx context.Context, repo, ref, onto string, as Identity) (newHead string, conflict bool, err error)
 	MissingBlobs(ctx context.Context, repo string, oids []string) ([]string, error)
 	PutBlobs(ctx context.Context, repo string, blobs [][]byte) ([]string, error)
@@ -314,17 +323,23 @@ type Mirror interface {
 	// plus entries) against its parent; it writes no commit and no ref.
 	Diff(ctx context.Context, repo string, raw []byte, entries []TreeEntry) (patch []byte, err error)
 	// AddCommit writes raw unchanged after the header allowlist and tree
-	// checks, and pins it with refs/compass/v/<change_id>/<n>.
-	AddCommit(ctx context.Context, repo string, raw []byte, entries []TreeEntry, who Identity, version int) (commit string, err error)
+	// checks. It writes no ref.
+	AddCommit(ctx context.Context, repo string, raw []byte, entries []TreeEntry, who Identity) (commit string, err error)
+	// PinVersion creates refs/compass/v/<change_id>/<n> and refuses if it
+	// exists. It runs only after AppendVcsVersion wins.
+	PinVersion(ctx context.Context, repo, changeID string, version int, commit string) error
 	DropVersions(ctx context.Context, repo, changeID string) error
 	FetchTrunk(ctx context.Context, repo string) (ref, commit string, err error)
 	Pack(ctx context.Context, repo string, wants, haves, shallow []string, w io.Writer) (newShallow []string, err error)
 }
 ```
 
-`repo` is the mirror key. The path is
-`<--vcs-mirror-dir>/<tenant>/<host>/<owner>/<name>.git`, so one mirror never
-holds two tenants.
+`repo` is the mirror key. Before any path is built, `repo` must be exactly
+`<owner>/<name>`: owner `[A-Za-z0-9-]+`, name `[A-Za-z0-9._-]+` and not `.`
+or `..`. A scope grant alone does not check this. The path is
+`<--vcs-mirror-dir>/<tenant>/<host>/<owner>/<name>.git`, lower-cased, so one
+mirror never holds two tenants. The Server refuses a joined path that
+resolves outside the mirror root.
 
 **Tree check.** `AddCommit` rebuilds the tree with `read-tree`, then
 `update-index --index-info` (mode 0 deletes), then `write-tree`, all under a
@@ -332,24 +347,33 @@ temp `GIT_INDEX_FILE`. It refuses unless the result equals the commit's
 `tree` line. A jj-made tree with a delete, a 755 file, and a symlink
 rebuilds to the same id (checked with git 2.55.0).
 
-**Pack.** `Pack` feeds `pack-objects --revs --stdout` with the wants,
-`^<have>`, and one `--shallow <id>` line per client shallow root, as
-`upload-pack` does. With no haves, it sends only the want commit's own tree.
-The caller (T3) checks that each want is the trunk tip or
-`VcsReadableCommit`.
+**Pack.** With no haves and no shallow roots, `Pack` sends one commit:
+`rev-list --objects --no-walk <want>` into `pack-objects --stdout`. It
+returns the want as the new shallow root, and the header carries it.
+Otherwise it feeds `pack-objects --revs --stdout` with the wants, `^<have>`,
+and one `--shallow <id>` line per client shallow root. It first drops each
+have the mirror lacks (`cat-file --batch-check`), because an unknown
+`^<have>` makes `pack-objects` fail. The caller (T3) checks that each want
+is the trunk tip or `VcsReadableCommit`.
 
 **Retention.** `DropVersions` deletes `refs/compass/v/<change_id>/*` when a
-change lands or retires. A daily `git gc --prune=2.weeks.ago` frees the
-space. Unreferenced blobs from a refused upload are never served, and gc
-removes them.
+change lands or retires. A daily job first re-pins each open version row
+with no ref (a crash between the CAS and `PinVersion`), then runs
+`git gc --prune=2.weeks.ago`. A commit whose CAS lost has no ref and no row,
+so gc removes it, as it removes blobs from a refused upload.
 
-**Cost.** The mirror stays off unless `--vcs-mirror-dir` is set. The T10
-rule stands: the change that enables it in a deployment adds an enforced cap
-at each billing layer (account, cluster, volume), a budget alert that pages
-Matt, and a spend-cap row per layer. This record adds one meter: Server →
-Runner pack bytes. Where they sit in different networks, that traffic is
-billed egress. Its caps are the per-session pack cap and a spend-cap row for
-data-transfer egress. When a DL-326 session snapshot holds a repo,
+**Cost.** The mirror stays off unless `--vcs-mirror-dir` is set, and the T10
+rule covers the volume. This record adds a second meter: Server → Runner
+pack bytes, billed as egress where the two sit in different networks. The
+pack stream is off unless `--vcs-pack-bytes-per-day` is set. That flag, a
+Server-wide total, and `--vcs-pack-bytes-per-session` refuse past their
+limits; they are the resource-layer cap. Before any deployment sets it, the
+enabling change must add an enforced egress cap at the account layer (a
+vendor usage limit, or the closest control we own) and at the cluster layer
+(an egress bandwidth limit on the Server, which bounds bytes per day), a
+budget alert that pages Matt through the billing paging route, and a
+spend-cap row per layer with evidence that it enforces. Until then the
+stream stays off. When a DL-326 session snapshot holds a repo,
 `vcs_checkout` sends its trunk as a have, so only the first fill is full.
 
 Red → green (temp repos):
@@ -361,7 +385,13 @@ Red → green (temp repos):
   sent;
 - `Rebase` writes the given committer;
 - a repo at its cap accepts uploads again after `DropVersions` and gc;
-- each cap refuses.
+- each cap refuses;
+- a fresh `Pack` holds the want and its tree but not its parent, and
+  returns the want as the shallow root;
+- an unknown have is dropped, and the pack still indexes;
+- `PinVersion` on an existing ref refuses;
+- `Push` with a stale `Old` refuses;
+- `../x`, `o/r/x`, and `o/..` refuse before any path is built.
 
 ### T3 — proto, arms, and the object stream
 
@@ -412,7 +442,7 @@ Red → green:
 - an out-of-scope repo is not found;
 - a want for another owner's version is not found;
 - the stream sends a header, then chunks that index into a fresh repo;
-- the per-session pack cap returns `resource_exhausted`.
+- the per-session and per-day pack caps return `resource_exhausted`.
 
 ### T4 — submit through the store
 
@@ -421,10 +451,12 @@ upload, parent first:
 
 1. Run `Mirror.Diff`, then `checkChange`.
 2. Run `EnsureVcsChange`.
-3. Run `AddCommit`, then `AppendVcsVersion`.
+3. Run `AddCommit`, then `AppendVcsVersion`, then `PinVersion`. A lost CAS
+   leaves the written commit with no ref and no row.
 
 The RIG-5558 checks follow. Each bookmark must point at an uploaded or
-stored commit. Then come `Push` with a lease, `MarkVcsPushed`, and the PR
+stored commit. Then come `Push`, with `Old` set to the latest pushed
+version's commit ("" for a new head), `MarkVcsPushed`, and the PR
 writes. When the line sits on a same-owner foreign PR (DL-536), the Server
 `Rebase`s that PR as its owning agent and appends the version for that
 agent. A PR seen as merged or closed triggers `CloseVcsChange` and
@@ -456,6 +488,7 @@ Red → green:
 - the failure text holds no token bytes;
 - a workflow path fails;
 - a refused upload leaves no ref and no row;
+- two submits at one version race, and only the winner gets a ref;
 - a stale lease pushes nothing and leaves `pushed_at` NULL;
 - a merged PR drops its version refs;
 - the OQ-3 probe result is in the PR.
@@ -466,12 +499,14 @@ Interfaces: `packages/compass-agent/src/vcs.ts` (RIG-5558 T6–T7, built
 against this record per OQ-6).
 
 - `VcsDeps` gains
-  `objects: (req: FetchObjectsRequest) => AsyncIterable<FetchObjectsResponse>`.
-  It is wired in `transport/**`.
+  `objects: (req: FetchObjectsRequest) => AsyncIterable<FetchObjectsResponse>`,
+  wired in `transport/**`, and `git: ProcRunner`, where
+  `ProcRunner.run(args, cwd, stdin?: AsyncIterable<Uint8Array>): Promise<JjResult>`
+  streams the chunk frames to the process.
 - New write tool `vcs_checkout {repo, dir?}`:
-  1. Pipe the pack to `git index-pack --stdin`.
+  1. Run `git init`, then pipe the pack to `git index-pack --stdin`.
   2. Write `.git/shallow` and `refs/remotes/origin/<trunk_ref>`.
-  3. Run `jj git init --colocate`.
+  3. Run `jj git init --colocate` on that repo.
   4. Set `user.name` and `user.email` with `jj config set --repo`.
   5. Run `jj new 'trunk()'`.
 - `vcs_sync` replaces `jj git fetch` with a `FetchObjects` call:
@@ -479,7 +514,8 @@ against this record per OQ-6).
   - haves: the local trunk and own commits;
   - shallow: `.git/shallow`.
 
-  It then updates the remote refs and runs the RIG-5558 rebase.
+  It then indexes the pack, updates the remote refs, and runs the RIG-5558
+  rebase.
 - `vcs_submit` sends `missing_blobs`, then `put_blobs` (batches of
   ≤ 15 MiB), then `submit_stack` with `changes`.
 - The bookmark-keyed inputs are unchanged (OQ-4 b).
@@ -488,6 +524,7 @@ against this record per OQ-6).
 Red → green (temp jj repo, fake transport):
 
 - after checkout, `trunk()` is the header commit;
+- a fake `ProcRunner` receives the chunk bytes in order;
 - submit sends only the missing blobs;
 - sync fetches before it rebases;
 - a sync conflict leaves jj conflict markers;
@@ -529,7 +566,8 @@ Red → green:
   the Server verifies and stores each commit.
 - **D2 — DL-579.** The review unit stays the RIG-5558 segment. The Server
   pushes commits as made, and force-pushes with a lease only after a base
-  move.
+  move. If the OQ-3 probe fails, base moves merge instead, and the push
+  token gains `workflows`.
 - **D3 — DL-580.** Agents fill and sync their jj repo only from the Server,
   and agent egress drops `github.com`.
 - **D4 — DL-581.** The Server checks each change's own diff and headers at
