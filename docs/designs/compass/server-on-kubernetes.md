@@ -303,6 +303,10 @@ answered `skopeo list-tags --no-creds`. Neither renderer emits
 `imagePullSecrets`. A command that only reads the registry (`skopeo
 inspect`, `podman manifest add`) sends no credentials; a write (`skopeo
 copy`, `podman manifest push`) uses them for the destination only (P5).
+One read is part of a write: the probe of the exact tag a push is about to
+write uses the login file. GHCR answers an anonymous request for a package
+that does not exist yet with 403, and every probe classifier aborts on
+403, so an anonymous probe would stop the push that creates the package.
 GitHub's REST packages API can list, get, delete and restore a
 package, but has no call that sets visibility. A new package starts private,
 and making it public is a one-way switch in the package settings: a manual
@@ -404,7 +408,8 @@ restart: it re-dials, re-enrolls with the hub, and keeps its microVMs.
   does. Every image is an OCI index of `linux/amd64` and `linux/arm64` once
   P7 lands.
 - **Registry auth.** Reads send no credentials; writes use credentials for
-  the destination only.
+  the destination only. The probe of the tag a push is about to write is
+  part of the write and uses the login file (D9).
 - **Secrets.** Renderers emit no Secret object and no secret value.
 - **Kubernetes.** ≥1.33, for user namespaces.
 - **PostgreSQL.** ≥16 for a non-superuser owner role (D3).
@@ -523,7 +528,8 @@ containing the supplied bootstrap-admin token") changes to match.
 ### P5 — Anonymous registry reads
 
 The five packages are public already. P5 makes every registry read in
-compass anonymous, so D9 holds, and keeps the packages public.
+compass anonymous except the destination probe, so D9 holds, and keeps the
+packages public.
 
 Dropping `--authfile` is not enough. Every publish job writes
 `REGISTRY_AUTH_FILE=$RUNNER_TEMP/ghcr-auth.json` to `$GITHUB_ENV`
@@ -535,6 +541,18 @@ add` has no `--no-creds`. So each read names its anonymity:
 - Every `skopeo inspect` of a registry ref passes `--no-creds`. skopeo then
   sets an empty `DockerAuthConfig`, which `GetCredentials`
   (`containers/image`, `pkg/docker/config`) returns before any auth file.
+- The exception is the destination probe: the `inspect` of the exact tag a
+  push is about to write, whose answer decides publish, skip or abort. It is
+  part of the write and uses the same credentials as the push. On
+  2026-10-17, an anonymous probe of a package that does not exist got
+  "Requesting bearer token: received unexpected HTTP status: 403 Forbidden";
+  a missing tag on an existing public package got "manifest unknown". The
+  pre-push classifiers free the tag only on a not-found answer:
+  `tagDisposition` (`tools/guest-image/publish-core.ts`,
+  `tools/gateway-image/core.ts`), `guard_immutable`
+  (`agent-image/publish.sh`) and `isManifestUnknown`
+  (`tools/agent-image-index/index.ts`). So an anonymous probe would abort
+  the push that creates a new package.
 - Every `skopeo copy` passes `--src-no-creds` and `--dest-authfile <file>`,
   never a bare `--authfile`. The rule holds for a local source too, where
   the source flag is a no-op.
@@ -551,21 +569,25 @@ The sites:
   `REGISTRY_AUTH_FILE` and fails `EXIT.usage` without it. `tagArgs`
   (`publish-core.ts`) moves from `--authfile` to the copy pair.
 - `tools/agent-image-index/index.ts`: `inspectCommand` drops `authFile` and
-  passes `--no-creds`; `composeLocalIndex` adds members with the empty auth
-  file.
+  passes `--no-creds`. `guardImmutableTag` probes `:git-<sha12>` with a new
+  `destinationProbeCommand` that carries the login file. `composeLocalIndex`
+  adds members with the empty auth file.
 - `tools/guest-image/publish.ts` and `tools/gateway-image/publish.ts`: the
-  `auth` spread leaves both `inspect` reads, which pass `--no-creds`. The
-  copy passes `--src-no-creds`, plus `--dest-authfile` when
+  pre-push probe keeps its `auth` spread, the login file when
+  `REGISTRY_AUTH_FILE` is set. The post-push re-read passes `--no-creds`.
+  The copy passes `--src-no-creds`, plus `--dest-authfile` when
   `REGISTRY_AUTH_FILE` is set.
 - `tools/release-notes/index.ts`: `gatherImage` adds `--no-creds`.
   `tools/guest-image/pin-agent-image.ts` passes it already.
 - The `release-image` job: three `skopeo inspect --authfile
   "$REGISTRY_AUTH_FILE"` reads (the ancestor probe and two digest checks)
-  and one `skopeo copy --multi-arch all`.
-- `agent-image/publish.sh`: two remote `inspect --raw --authfile` reads and
-  one `copy "nix:$SPEC" "$dest" --authfile`. The pinned fork skopeo
-  (`tools/toolchain/skopeo-nix2container-env.nix`, 1.24.1) has `--no-creds`,
-  `--src-no-creds` and `--dest-authfile`.
+  and one `skopeo copy --multi-arch all`. All three are source or
+  verification reads, so all pass `--no-creds`.
+- `agent-image/publish.sh`: the `guard_immutable` probe of `$dest` keeps
+  `--authfile "$REGISTRY_AUTH_FILE"`. The post-copy re-read passes
+  `--no-creds`, and the `copy "nix:$SPEC" "$dest"` passes the copy pair.
+  The pinned fork skopeo (`tools/toolchain/skopeo-nix2container-env.nix`,
+  1.24.1) has `--no-creds`, `--src-no-creds` and `--dest-authfile`.
 
 `classifyProbe` still reads 403 as ambiguous, because a private package and
 a missing package give the same 403.
@@ -580,33 +602,42 @@ A new check runs as the last step of each of the five publish jobs. It
 reads the just-published tag anonymously and fails with the package settings
 path when the package is not public. A new package therefore fails its first
 publish until someone sets it public: the one manual step, because no API
-sets visibility.
+sets visibility. On a new package, the anonymous post-push re-read fails
+first, with 403. The re-run after the package is set public finds the tag
+through the destination probe, skips the push, and passes the check.
 
-Tests, red first. Each asserts the flag on every read, not the absence of
-auth:
+Tests, red first. Each asserts the flag on every read, and the login file on
+the destination probe:
 
 - `retag-core.test.ts`: `inspectArgv` carries `--no-creds`; `copyArgv`
   carries `--src-no-creds` and `--dest-authfile` and no `--authfile`.
 - `publish-core.test.ts`: `tagArgs` carries the copy pair and no
   `--authfile`.
-- `tools/agent-image-index/index.test.ts`: every recorded `skopeo inspect`
-  carries `--no-creds`; every `podman manifest add` carries the empty auth
-  file, whose content is `{}`; only `podman manifest push` carries the
-  login file.
+- `tools/agent-image-index/index.test.ts`: the `guardImmutableTag` probe of
+  `:git-<sha12>` carries `--authfile <AUTH>` and no `--no-creds`; every other
+  recorded `skopeo inspect` carries `--no-creds`; every `podman manifest add`
+  carries the empty auth file, whose content is `{}`; only `podman manifest
+  push` and the destination probe carry the login file.
 - `tools/guest-image/publish.test.ts`: the case "threads --authfile to
-  every registry call when the login pinned one" now requires `--no-creds`
-  on each logged `inspect` and `--src-no-creds --dest-authfile
-  /tmp/creds.json` on the `copy`.
+  every registry call when the login pinned one" now requires `--authfile
+  /tmp/creds.json` on the pre-push `inspect`, `--src-no-creds --dest-authfile
+  /tmp/creds.json` on the `copy`, and `--no-creds` on the re-read. A new case
+  stubs skopeo to answer 403 to an `inspect` without `--authfile` and
+  "manifest unknown" to one with it, and requires the `copy` to run.
 - `tools/gateway-image/publish.test.ts`: the case "passes the auth file to
-  probe, copy, and re-read" expects `inspect --no-creds --raw`, then `copy
-  --src-no-creds --dest-authfile /tmp/registry-auth.json`, then `inspect
-  --no-creds --raw`.
+  probe, copy, and re-read" expects `inspect --authfile
+  /tmp/registry-auth.json --raw`, then `copy --src-no-creds --dest-authfile
+  /tmp/registry-auth.json`, then `inspect --no-creds --raw`.
 - A new `tools/runner-image/registry-auth.test.ts` joins continuation lines
   in `release.yml` and `agent-image/publish.sh`. Every skopeo `inspect` of a
   non-`nix:` ref must carry `--no-creds`. Every `copy` must carry
   `--src-no-creds` and `--dest-authfile`. Only `login` may carry
-  `--authfile`. It checks the `gatherImage` template the same way. Today's
-  sources fail all three rules.
+  `--authfile`. It checks the `gatherImage` template the same way. One case
+  is allowed: the body of `guard_immutable` in `agent-image/publish.sh`
+  (from `guard_immutable() {` to the next line that is exactly `}`) holds
+  exactly one `inspect`, and it must carry `--authfile
+  "$REGISTRY_AUTH_FILE"` and no `--no-creds`. Today's sources fail the
+  first three rules.
 - `assert-public-core.test.ts` maps a manifest to public, and a 403, a
   "manifest unknown" and a timeout to failures that name the package.
 
@@ -804,9 +835,16 @@ export function copyArgv(sourceRef: string, destRef: string, destAuthFile: strin
 //   ["copy","--preserve-digests","--src-no-creds","--dest-authfile",<destAuthFile>,"docker://<sourceRef>","docker://<destRef>"]
 // tools/runner-image/publish-core.ts (P5): signature unchanged, argv moves to the copy pair
 export function tagArgs(repo: string, digest: string, sha12: string, authFile: string): string[];
-// tools/agent-image-index/index.ts (P5): authFile leaves the read path
+// tools/agent-image-index/index.ts (P5): authFile leaves every read except the destination probe
 function inspectCommand(tag: string, ...args: string[]): string[]; // ["skopeo","inspect",...args,"--no-creds",tag]
+function destinationProbeCommand(authFile: string, tag: string): string[]; // ["skopeo","inspect","--raw","--authfile",authFile,tag]
+// guardImmutableTag probes :git-<sha12> with destinationProbeCommand; nothing else calls it
 // composeLocalIndex writes "{}" to <runnerTemp>/anonymous-auth.json and passes it to every `podman manifest add`
+// tools/guest-image/publish.ts, tools/gateway-image/publish.ts (P5):
+//   pre-push probe ["inspect",...auth,"--raw","docker://<tag>"], auth = ["--authfile",REGISTRY_AUTH_FILE] or []
+//   copy ["copy","--src-no-creds",...destAuth,...,"oci:<layout>","docker://<tag>"], destAuth = ["--dest-authfile",REGISTRY_AUTH_FILE] or []
+//   re-read ["inspect","--no-creds","--raw","docker://<tag>"]
+// agent-image/publish.sh (P5): guard_immutable keeps `inspect --raw --authfile "$REGISTRY_AUTH_FILE" "$dest"`
 
 // tools/runner-image/retag-core.ts (P6)
 export function mainTag(firstParentCount: number, commit: string): string; // "main-<n>-<sha12>"
@@ -897,8 +935,8 @@ func fetchHTTPS(ctx context.Context, client *http.Client, u, bearer string) ([]b
 - [x] P3 — Runner renderer `serverCA` and `egressAllow`, compass PRs #2358
   and #2360
 - [ ] P4 — Admin token file from a Secret volume (Go), with the spec change
-- [ ] P5 — Anonymous registry reads in every lane; publish fails on a private
-  package
+- [ ] P5 — Anonymous registry reads in every lane, except the authenticated
+  destination probe; publish fails on a private package
 - [ ] P6 — Paired `:main-<n>-<sha12>` tags on the head of every main push,
   after P5
 - [ ] P7 — Multi-arch (`linux/amd64`, `linux/arm64`) images in every lane,
