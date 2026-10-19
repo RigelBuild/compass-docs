@@ -15,13 +15,10 @@ The questions are independent. The design assumes each recommendation.
    - (c) A new public repo, `RigelBuild/nix-cache-producer`, with composite
      actions pinned by SHA. These run in the caller's job, so
      `job_workflow_ref` stays the fork's workflow and the drafted trust
-     entries (RIG-5698 comment e715b613) need no `callee`. A fix is one
-     producer PR plus four SHA-bump PRs. Its minter makes a ninth holder of
-     the automation App key.
-   - **Recommendation: (c).** A pinned action cannot vouch for itself, so a
-     fork-owned step checks the pin is on the producer's protected `main`
-     (§ Where it runs). Under (a), T1 is dropped, T2–T5 are copied into each
-     fork, and the producer `uses:` steps become `bun` steps.
+     entries need no `callee`. A fix is one producer PR plus four SHA-bump
+     PRs. Its minter makes a ninth holder of the automation App key.
+   - **Recommendation: (c),** with a fork-owned pin check (§ Where it runs).
+     Under (a), T1 is dropped and T2–T5 are copied into each fork.
 2. **Upload path for large NARs (Matt; the signer owner, RIG-5407).** The
    `rigel.build` zone is on Cloudflare Pro: a proxied body over 100 MB gets
    413
@@ -39,16 +36,13 @@ The questions are independent. The design assumes each recommendation.
    - **Recommendation: (D).** The contract is unchanged. Until it lands, no
      fork with a NAR over 100 MB is enabled.
 3. **A non-reproducible rerun blocks a release (the signer owner; Matt if the
-   gate rule changes).** A rerun rebuilds on a fresh runner. A different
-   rebuild stores a second attestation for the same system, and the publisher
-   rejects "two attestations for <system>" forever.
+   gate rule changes).** A rerun that rebuilds differently stores a second
+   attestation for the system, and the publisher rejects the release forever.
    - (A) The publisher ignores attestations whose staging never completed.
    - (B) Recovery is a new `-rigel.N+1` release.
-   - (C) The producer withdraws its uncompleted attestation, by an
-     OIDC-authenticated `DELETE`, before it attests again.
+   - (C) The producer withdraws its uncompleted attestation by `DELETE`.
    - (D) A rerun uploads the first run's saved closure. Heavy for omp.
-   - **Recommendation: (A)**, with (B) until it lands. In-process retries
-     keep reruns rare.
+   - **Recommendation: (A)**, with (B) until it lands.
 4. **Substituting from Rigel's public cache (Matt).** A release rebuilds
    unchanged paths that Rigel already published. A rebuild that is not
    bit-identical conflicts with the published narHash, and the gate
@@ -73,14 +67,12 @@ Matt ruled on RIG-5699 (2026-10-18). D1 and D2 record the ruling.
 
 ## Problem / Intent
 
-The cache signer publishes a fork release to Rigel's public Nix cache only
-after the fork has attested the release and staged its full closure (parent
-RIG-4790). Nothing produces either today. Each fork's `release-tag.yaml` mints
-a `vX.Y.Z-rigel.N` tag on a push to `rigel-release` and stops. The producer
-adds the missing half: on a release push it builds the manifest roots for each
-system, attests their runtime closure, and stages it unsigned through the
-signer's upload endpoint. The signer publishes later, when the consumer's bump
-PR moves the fork's pin.
+The cache signer publishes a fork release only after the fork has attested it
+and staged its full closure (parent RIG-4790). Nothing produces either today:
+each fork's `release-tag.yaml` mints a `vX.Y.Z-rigel.N` tag on a push to
+`rigel-release` and stops. The producer builds the manifest roots per system,
+attests their runtime closure, and stages it unsigned through the signer. The
+signer publishes when the consumer's bump PR moves the fork's pin.
 
 ## Approach
 
@@ -119,8 +111,24 @@ GitHub-hosted runners are free for public repositories
 | jj-vine | `jj-vine` | — | `jj-vine` |
 | nix2container | `nix2container-bin`, `skopeo-nix2container` | `nix2container-bin`, `skopeo-nix2container` | — |
 
-Each name is the root `packages.<system>.<name>`, as in RIG-5698 comment
-e715b613: nine legs, one attestation each.
+Each name is the root `packages.<system>.<name>`: nine legs, one attestation
+each. The expected outPaths, evaluated at the revs consumers lock on
+2026-10-19, are T5's acceptance fixture:
+
+| Fork rev | Root | outPath |
+| --- | --- | --- |
+| woodpecker `dfc97d50662e08a37798ff80d77434c761065694` | `aarch64-linux.woodpecker-server` | `/nix/store/advdr1xdz9g795f11r2gjs0h442jpq82-woodpecker-server-3.17.0-rigel.14` |
+| | `aarch64-linux.woodpecker-agent` | `/nix/store/cjfprja0a1yjhhnkmisvqsj1rqn9ihf5-woodpecker-agent-3.17.0-rigel.14` |
+| | `x86_64-linux.woodpecker-agent` | `/nix/store/aij1xq4s5jq1c93rcd861khd4rgl3ckz-woodpecker-agent-3.17.0-rigel.14` |
+| | `aarch64-darwin.woodpecker-agent` | `/nix/store/3w33nnmxx9dccli9nz1cg0i68pnpvjp2-woodpecker-agent-3.17.0-rigel.14` |
+| oh-my-pi `4e506a0cf0639874ca75464f70c26e58acdeb237` | `x86_64-linux.omp` | `/nix/store/nvwzlbncf4rnas0vbd5v598r6h6vqs7n-omp-18.9.2-rigel.1` |
+| | `aarch64-darwin.omp` | `/nix/store/qnvb58k2zzd282a8afrygp1ldm5j1s7w-omp-18.9.2-rigel.1` |
+| jj-vine `6a8b21b5ddb0f84e4a83a9993b9d3446fb500456` | `x86_64-linux.jj-vine` | `/nix/store/8m6jdb2qh14g280f7rrjwmmr87a6hq2z-jj-vine-0.5.4-rigel.1` |
+| | `aarch64-darwin.jj-vine` | `/nix/store/xmhb78w1m5wzgyfdl4m639rvr4jspkw5-jj-vine-0.5.4-rigel.1` |
+| nix2container `7663114b3c271f6119478fb7cfe79c42347d29ae` | `x86_64-linux.nix2container-bin` | `/nix/store/f1blj11ghlkf32mczynhbl21jamcxs77-nix2container-1.0.0` |
+| | `x86_64-linux.skopeo-nix2container` | `/nix/store/8pq413af13q376xkjib2kkf1vl26zgmd-skopeo-1.21.0` |
+| | `aarch64-linux.nix2container-bin` | `/nix/store/xp3qffdck2gz17c91q3i098dyr280xbw-nix2container-1.0.0` |
+| | `aarch64-linux.skopeo-nix2container` | `/nix/store/rjjr630yy6xvqis8lay3p2jwry82bm7s-skopeo-1.21.0` |
 
 ### Build and capture
 
@@ -141,6 +149,12 @@ e715b613: nine legs, one attestation each.
 
 ### Signer calls
 
+Only `POST /v1/attestations` exists today. Everything else below is
+**proposed, owned by the signer (RIG-5407)**. The signer owner publishes the
+contract: route schemas and statuses, idempotency, token checks, NAR
+streaming limits and deadlines, and signer-side acceptance tests. § Rollout
+waits for it to be deployed.
+
 Each call carries a fresh OIDC token. Before the first call, the leg decodes
 its token and checks `repository`, `sha`, `workflow_ref`, `job_workflow_ref`,
 `event_name` and `ref` against its release context, naming any mismatch.
@@ -157,17 +171,13 @@ its token and checks `repository`, `sha`, `workflow_ref`, `job_workflow_ref`,
 | 429, any 5xx, or a transport error | Retry in process: wait `Retry-After` if given, else back off from 1 s, doubling to 60 s. |
 | Any other 4xx | Fail the leg. |
 
-Every call is idempotent: the same attestation, bytes, or key set at
-`complete` answer 200. A retry reuses the leg's build and digest, so it is
-always safer than a rerun. Retries stop after 30 minutes per call and 90 per
-leg. A PUT's deadline is the signer's read deadline (2 minutes plus 1 second
-per MiB, capped at 30 minutes) plus 60 seconds. Two PUTs per leg, not four,
-because every leg shares the signer's four body slots, and a busy answer sent
-mid-body can arrive as a connection reset.
-
-Two signer behaviours are assumed and posted on RIG-5407: the PUT route
-extends its write deadline with its read deadline, and checks the token only
-at the headers.
+Every call is idempotent, so a retry, which reuses the leg's build and
+digest, is safer than a rerun. Retries stop after 30 minutes per call and 90
+per leg. A PUT's deadline is the signer's read deadline (2 minutes plus 1
+second per MiB, capped at 30 minutes) plus 60 seconds. Two PUTs per leg,
+because legs share the signer's four body slots, and a busy answer mid-body
+can arrive as a reset. Also assumed: the PUT route extends its write deadline
+with its read deadline, and checks the token only at the headers.
 
 Recovery is "Re-run failed jobs", within 30 days; never rerun a completed
 leg. A release with no attestation posts no status on the consumer's bump PR,
@@ -197,13 +207,14 @@ between producer and signer is the golden vectors.
 | empty | `8224f1853e23597c289636641f6c51cb08893e128ae7e79013ab1272aac6b584` |
 | unicode and control escapes | `8e8c175aa796d4a5d28334e6383db9c34e5dcee6f1e783731910c797604a37a3` |
 | UTF-16 order | `bfeff84fa061297c07306505a701bddc0d0a159ca178e287a31deef3939292f9` |
-| fork (woodpecker aarch64-linux) | `f15fe409987fc1c6b74b94ba41991a36e150b026722d1b6cb9240f079b677236` |
+| fork (woodpecker aarch64-linux) | pending |
 
-All five reproduce with these rules. They live in
-`test/vectors/attestation-digest.json`. The fork vector is from the
-signer-side fixture test (D2), not yet merged, so T5 re-copies it after the
-merge. It tests the encoding, not the binding. To change the encoding, the
-signer owner posts new vectors, the producer releases, and forks move pins.
+The four listed digests reproduce, with these rules, from the signer's tests
+today. They live in `test/vectors/attestation-digest.json`. The fork vector is
+pending: it comes from the signer-side fixture test (D2), and T5 copies it
+once that test is on the signer's `main`. It tests the encoding, not the
+binding. To change the encoding, the signer owner posts new vectors, the
+producer releases, and forks move pins.
 
 ### Code and runtime
 
@@ -215,11 +226,9 @@ Go would need a hand-written encoder, and the signer's is not public.
 ### Tests
 
 Each fork's `check` job runs the `check` action on every PR to
-`rigel-release`. It recomputes the vectors and checks the job shape: needs,
-conditions, the fork-owned pin step, exact permissions, no `environment`,
-`fail-fast: false`, runner per system, one producer SHA. This catches
-mistakes; the fork-owned pin step is the trust control. Each `stage` leg also
-recomputes the vectors before its first call.
+`rigel-release`. It recomputes the vectors and checks the job shape. This
+catches mistakes; the fork-owned pin step is the trust control. Each `stage`
+leg also recomputes the vectors before its first call.
 
 The producer's `bun test` covers each module, with the signer client against
 a `Bun.serve` fake. The dry run builds, captures and digests, checks every NAR
@@ -230,7 +239,8 @@ mints a token. A `workflow_dispatch` workflow runs it on the real runners.
 
 Fork PRs open now as drafts on `rigel-release` and stay draft until:
 
-- the signer is live (RIG-5407), with its staging host and audience posted;
+- the signer's staging contract (§ Signer calls) is deployed (RIG-5407),
+  with its staging host and audience posted;
 - the policy file lists the fork (RIG-5274);
 - the signer's capacity proof has passed;
 - for jj-vine and nix2container, the consuming flake uses the fork's outputs;
@@ -324,8 +334,9 @@ export function checkVectors(): void; // throws, naming the first failing vector
 }
 ```
 
-Tests: the five vectors; SRI, hex and nix32 spellings of one hash normalize
-alike; input order and a present `digest` do not change the digest.
+Tests: the four signer vectors, and the fork vector once copied (T5); SRI,
+hex and nix32 spellings normalize alike; input order and a present `digest`
+do not change the digest.
 
 ### T3. Build and capture
 
@@ -394,7 +405,8 @@ export async function complete(cfg: SignerConfig, digest: string): Promise<void>
 ```
 
 Each request sets `AbortSignal.timeout` and `timeout: false`, because Bun's
-`timeout` is an idle timer, not a deadline.
+`timeout` is an idle timer, not a deadline. When the signer's contract lands,
+the fake is updated to it before T6.
 
 Tests, against a `Bun.serve` fake: 201, then 200 on a repeat; 503 with
 `Retry-After: 1`, then 201; 500 and a dropped connection, then 201; 400 and
@@ -502,8 +514,8 @@ Done when:
 - the signer-side fork fixture test is on the signer's `main`, and the fork
   vector is copied from there;
 - `bun test` passes in the producer's CI;
-- the nine dry runs pass at the revs consumers lock today, and their root
-  outPaths equal RIG-5698 comments e715b613 and b76e8ef4;
+- the nine dry runs pass at the fixture revs in § Where it runs, and every
+  root outPath equals the fixture;
 - each fork's largest NAR is posted on RIG-5698;
 - `v0.1.0` is minted.
 
@@ -521,13 +533,15 @@ links RIG-5698.
 
 - [ ] Post the two signer assumptions, the missing-attestation status ask,
       and Open Questions 2 and 3 to the signer owner on RIG-5407.
+- [ ] Signer owner: publish the staging contract and its acceptance tests;
+      align T4's fake with it.
 - [ ] File Open Questions 1 and 4 for Matt.
 - [ ] T1: IaC PR, apply, root commit.
 - [ ] T2: vector tests first; see them fail; then nix32 and the digest.
 - [ ] T3: fixture tests first; then `src/nix.ts`.
 - [ ] T4: fake-signer tests first; then the client.
-- [ ] T5: CLI, actions and workflows; nine dry runs; outPaths and largest NARs
-      on RIG-5698; mint `v0.1.0`.
+- [ ] T5: CLI, actions and workflows; fork vector; nine dry runs against the
+      outPath fixture; largest NARs on RIG-5698; mint `v0.1.0`.
 - [ ] T6–T9: four draft PRs pinned to `v0.1.0`.
 - [ ] Per fork, once § Rollout holds: set the posted values, bump the version,
       promote and merge. The release's legs pass, and its consumer bump PR
