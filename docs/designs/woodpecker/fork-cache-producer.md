@@ -26,15 +26,18 @@ The questions are independent. The design assumes each recommendation.
    and the origin must answer within about 100 seconds
    ([Cloudflare](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-5xx-errors/error-524/)).
    The omp NAR is about 251 MB.
-   - (A) The whole signer host is DNS-only. The webhook and the
-     unauthenticated health routes lose the proxy.
-   - (B) Chunked PUTs. The signer gains part assembly.
+   The signer sits behind a Cloudflare Tunnel, and a tunnel hostname must be
+   proxied, so a DNS-only host needs a new public LoadBalancer, a certificate
+   in the pod, and no WAF in front of the upload routes.
+   - (A) The whole signer host is DNS-only, on that LoadBalancer.
+   - (B) Chunked PUTs of 64 MiB parts, assembled in the signer's spool file.
+     `narHash` is still checked over the whole NAR.
    - (C) The attestation call returns presigned R2 PUT URLs. It removes the
      size, deadline and slot limits, but reopens RIG-5699's rejected
      temporary-credential option.
-   - (D) A second, DNS-only host for the staging routes only.
-   - **Recommendation: (D).** The contract is unchanged. Until it lands, no
-     fork with a NAR over 100 MB is enabled.
+   - (D) A second DNS-only host for the staging routes only, with A's costs.
+   - **Recommendation: (B).** It keeps the tunnel and WAF, and the signer
+     owner agrees. Until it lands, no fork with a NAR over 100 MB is enabled.
 3. **A non-reproducible rerun blocks a release (the signer owner; Matt if the
    gate rule changes).** A rerun that rebuilds differently stores a second
    attestation for the system, and the publisher rejects the release forever.
