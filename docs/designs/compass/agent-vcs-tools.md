@@ -184,7 +184,7 @@ through its own lease and `compass-mirror:` marker, so it is left as is.
    resends. The DL-206 gap stays exactly the forge-success, pre-record
    window.
 
-`submit_stack` (field 17) takes entries bottom to top. Per entry:
+`submit_stack` (field 18) takes entries bottom to top. Per entry:
 
 1. Find the PR by head in any state, open first. The repo squash-merges and
    deletes merged branches, so a merged or closed hit refuses: "sync first".
@@ -198,7 +198,7 @@ through its own lease and `compass-mirror:` marker, so it is left as is.
 
 The first failed entry stops the call: later entries return `skipped`, and
 no restamp runs. Otherwise the Server restamps each lower PR whose block
-changed. Only `ready_head_ref` leaves draft. `stack_status` (field 18) is the
+changed. Only `ready_head_ref` leaves draft. `stack_status` (field 19) is the
 read twin.
 
 Rows written here carry a NULL `client_request_id`.
@@ -420,10 +420,10 @@ message StackResult {
 }
 ```
 
-`ForgeCallRequest` adds `submit_stack = 17`, `stack_status = 18`,
-`retire_head = 19`; `ForgeCallResult` adds `stack = 11`. The
-`client_request_id` comment ("oneof arms 2-11, 14-16") becomes
-`2-11, 14-19`. Red → green: buf gates.
+`ForgeCallRequest` adds `submit_stack = 18`, `stack_status = 19`,
+`retire_head = 20`; `edit_issue` already holds 17. `ForgeCallResult` adds
+`stack = 11`. The `client_request_id` comment ("oneof arms 2-11, 14-16")
+becomes `2-11, 14-20`. Red → green: buf gates.
 
 ### T4 — store: write intents and case-folded lookup
 
