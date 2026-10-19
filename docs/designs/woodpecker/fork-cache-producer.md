@@ -37,7 +37,7 @@ The questions are independent. The design assumes each recommendation.
      temporary-credential option.
    - (D) A second DNS-only host for the staging routes only, with A's costs.
    - **Recommendation: (B).** It keeps the tunnel and WAF, and the signer
-     owner agrees. Until it lands, no fork with a NAR over 100 MB is enabled.
+     owner agrees.
 3. **A non-reproducible rerun blocks a release (the signer owner; Matt if the
    gate rule changes).** A rerun that rebuilds differently stores a second
    attestation for the system, and the publisher rejects the release forever.
@@ -47,15 +47,12 @@ The questions are independent. The design assumes each recommendation.
    - (D) A rerun uploads the first run's saved closure. Heavy for omp.
    - **Recommendation: (A)**, with (B) until it lands.
 4. **Substituting from Rigel's public cache (Matt).** A release rebuilds
-   unchanged paths that Rigel already published. A rebuild that is not
-   bit-identical conflicts with the published narHash, and the gate
-   quarantines the path and fails every bump containing it.
-   - (A) Also substitute from Rigel's public cache, with its key. Unchanged
-     paths come back as the bytes the signer signed.
-   - (B) Use cache.nixos.org only, and have T5 build each fork twice and
-     compare narHashes before enable.
-   - **Recommendation: (A).** The producer trusts nothing beyond
-     cache.nixos.org and the signer's own output.
+   unchanged paths Rigel already published. A non-identical rebuild conflicts
+   with the published narHash, and the gate quarantines it.
+   - (A) Also substitute from Rigel's public cache, with its key.
+   - (B) cache.nixos.org only; T5 builds each fork twice and compares.
+   - **Recommendation: (A).** Unchanged paths come back as the signer's own
+     bytes.
 
 ## Decisions
 
@@ -95,10 +92,9 @@ workflow, after `mint`, which is unchanged:
    system, with `fail-fast: false` and `timeout-minutes: 180`.
 
 `resolve` reads the remote because no mint script writes an output, and
-"already exists; nothing to mint" never checks the tag's target. A push that
-keeps the version has no tag at `github.sha`, so nothing is staged. Every fork
-merges into `rigel-release` only by merge commit or squash, so the tag the
-mint scripts place lands on `github.sha`, which the signer requires.
+"already exists; nothing to mint" never checks the tag's target. Forks merge
+into `rigel-release` only by merge commit or squash, so the tag lands on
+`github.sha`, as the signer requires.
 
 `stage` has exactly `contents: read` and `id-token: write`. Neither job has an
 `environment`, which keeps the App key out and fixes the token's `sub`. The
@@ -147,16 +143,15 @@ each. The expected outPaths, evaluated at the revs consumers lock on
   roots (Nix 2.33 and later). The producer joins basenames with `storeDir`,
   converts SRI to `sha256:<nix32>`, and keeps self-references. The result is
   exactly the paths the signer walks from the roots.
-- **NAR.** `nix-store --dump` streams into the body, with `Content-Length`
-  set to `narSize`. A 600 MiB upload measured about 28 MiB peak RSS.
+- **NAR.** `nix-store --dump` is read in 64 MiB parts. Each part is held in
+  memory until the signer accepts it, so a leg holds at most 128 MiB.
 
 ### Signer calls
 
 Only `POST /v1/attestations` exists today. Everything else below is
-**proposed, owned by the signer (RIG-5407)**. The signer owner publishes the
-contract: route schemas and statuses, idempotency, token checks, NAR
-streaming limits and deadlines, and signer-side acceptance tests. § Rollout
-waits for it to be deployed.
+**proposed, owned by the signer (RIG-5407)**, which publishes the contract:
+schemas, statuses, idempotency, token checks, limits, deadlines and
+acceptance tests.
 
 Each call carries a fresh OIDC token. Before the first call, the leg decodes
 its token and checks `repository`, `sha`, `workflow_ref`, `job_workflow_ref`,
@@ -165,8 +160,9 @@ its token and checks `repository`, `sha`, `workflow_ref`, `job_workflow_ref`,
 | Step | Call | Notes |
 | --- | --- | --- |
 | 1 | `POST /v1/attestations` | The attestation with its local `digest`. The returned digest must equal it. |
-| 2 | `PUT /v1/staging/<digest>/nar/<nix32>.nar` | Once per distinct key, two in flight per leg. The signer writes the narinfos itself. |
-| 3 | `POST /v1/staging/<digest>/complete` | Empty body. |
+| 2 | `PUT /v1/staging/<digest>/nar/<nix32>.nar/parts/<n>` | From `n` = 0, each part exactly 64 MiB except a shorter last one. A NAR of 64 MiB or less is part 0 alone. |
+| 3 | `POST /v1/staging/<digest>/nar/<nix32>.nar/complete` | Body `{"parts": N}`. The signer checks every part, the total size, and `narHash` over the whole NAR. |
+| 4 | `POST /v1/staging/<digest>/complete` | Empty body. The signer writes the narinfos. |
 
 | Answer | Action |
 | --- | --- |
@@ -174,13 +170,13 @@ its token and checks `repository`, `sha`, `workflow_ref`, `job_workflow_ref`,
 | 429, any 5xx, or a transport error | Retry in process: wait `Retry-After` if given, else back off from 1 s, doubling to 60 s. |
 | Any other 4xx | Fail the leg. |
 
-Every call is idempotent, so a retry, which reuses the leg's build and
-digest, is safer than a rerun. Retries stop after 30 minutes per call and 90
-per leg. A PUT's deadline is the signer's read deadline (2 minutes plus 1
-second per MiB, capped at 30 minutes) plus 60 seconds. Two PUTs per leg,
-because legs share the signer's four body slots, and a busy answer mid-body
-can arrive as a reset. Also assumed: the PUT route extends its write deadline
-with its read deadline, and checks the token only at the headers.
+A part re-PUT answers 200 for the same bytes and 409 for different ones. A
+NAR `complete` with a part missing answers 400. A retry resends the same
+part, so it is safer than a rerun. Retries stop after 30 minutes per call and
+90 per leg. A part's deadline is 2 minutes plus 1 second per MiB, plus 60
+seconds. A leg has two NARs in flight, one part each, because legs share the
+signer's four body slots. Also assumed: the part route checks the token at
+the headers, and a NAR `complete` answers within 100 seconds.
 
 Recovery is "Re-run failed jobs", within 30 days; never rerun a completed
 leg. A release with no attestation posts no status on the consumer's bump PR,
@@ -242,12 +238,11 @@ mints a token. A `workflow_dispatch` workflow runs it on the real runners.
 
 Fork PRs open now as drafts on `rigel-release` and stay draft until:
 
-- the signer's staging contract (§ Signer calls) is deployed (RIG-5407),
-  with its staging host and audience posted;
+- the signer's staging contract, part routes included, is deployed
+  (RIG-5407), with its host and audience posted;
 - the policy file lists the fork (RIG-5274);
 - the signer's capacity proof has passed;
-- for jj-vine and nix2container, the consuming flake uses the fork's outputs;
-- Open Question 2 is settled, if the fork has a NAR over 100 MB.
+- for jj-vine and nix2container, the consuming flake uses the fork's outputs.
 
 Merging is the enable step. The PR also bumps the version, so its merge cuts
 the first staged release. Earlier releases, such as woodpecker's
@@ -255,8 +250,7 @@ the first staged release. Earlier releases, such as woodpecker's
 claim.
 
 Order: jj-vine (small, Linux and macOS), nix2container, woodpecker, oh-my-pi
-(waits on Open Question 2). If T5 finds a jj-vine NAR over 100 MB,
-nix2container goes first.
+(the largest NARs).
 
 ### Rejected
 
@@ -394,11 +388,14 @@ export interface SignerConfig {
 }
 // Retry-After when given, else 1 s doubling to 60 s.
 export function backoffMs(attempt: number, retryAfter: string | null): number;
-// min(120 s + 1 s per MiB of narSize, 30 min) + 60 s.
-export function putDeadlineMs(narSize: number): number;
+export const PART_BYTES: number; // 64 MiB
+// 120 s + 1 s per MiB of the part + 60 s.
+export function partDeadlineMs(partBytes: number): number;
 // Returns the signer's digest; throws if it differs from attestation.digest.
 export async function postAttestation(cfg: SignerConfig, attestation: Attestation): Promise<string>;
-// open() starts a fresh dump per attempt; the PUT fails if done rejects.
+// Reads one dump in PART_BYTES parts and PUTs each, retrying a part under
+// the status policy with the part held in memory, then POSTs the NAR's
+// complete. Fails if done rejects or the bytes read differ from narSize.
 export async function putNar(cfg: SignerConfig, digest: string, info: PathInfo,
   open: () => NarStream): Promise<void>;
 // Distinct keys, `concurrency` (default 2) in flight; the first failure aborts the rest.
@@ -413,9 +410,11 @@ the fake is updated to it before T6.
 
 Tests, against a `Bun.serve` fake: 201, then 200 on a repeat; 503 with
 `Retry-After: 1`, then 201; 500 and a dropped connection, then 201; 400 and
-404 fail with no retry; the per-call and per-leg budgets end retries; at most
-two PUTs in flight; a new token per request; `Content-Length` equals
-`narSize`; the deadline at 0, 1 MiB and 2 GiB.
+404 fail with no retry; the per-call and per-leg budgets end retries; a
+three-part NAR with a short last part; a NAR under 64 MiB as part 0; one
+part retried alone; 409 on conflicting part bytes; a NAR `complete` failing
+on a missing part; at most two NARs in flight; a new token per request;
+`Content-Length` equals the part size; the deadline at 0, 1 MiB and 64 MiB.
 
 ### T5. Actions, dry run and first release
 
