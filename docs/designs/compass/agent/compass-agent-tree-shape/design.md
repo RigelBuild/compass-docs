@@ -308,9 +308,10 @@ thresholds are prompt guidance; Q3 (c) would move them into a server check.
 - The notice states which branch drainLost took: "re-waking" when it wakes or defers a wake, and
   "down, not re-woken" when an errored child owes no work. The second case is the one the parent
   must act on.
-- Rate-limit "re-waking" notices to one per child per `erroredWakeResetAfter` window, so a crash
-  loop does not wake the parent on every cycle. A "down" notice is never rate-limited: it is the
-  last loss before the child stops, so it fires at most once per stop.
+- Rate-limit to one notice per (child, notice type) per `erroredWakeResetAfter` window. A crash loop
+  does not wake the parent on every cycle, and a recent "re-waking" notice never hides a "down"
+  notice. Keying "down" too bounds a loop where the parent DMs the child and it crashes again with
+  nothing owed; that path records no errored-wake strike.
 - **Interfaces:** consumes `OnSessionLost(sessionID, account, errored)`. The `Consumer`
   (`go/internal/delivery/consumer.go`) holds no poster and no parent lookup today, so T5 adds:
   - a `DeliveryReads` method returning an account's `parent_agent_id` and the parent's
@@ -319,8 +320,8 @@ thresholds are prompt guidance; Q3 (c) would move them into a server check.
     at server assembly in `go/server/sinks.go` with the existing setter pattern, which avoids the
     delivery↔server construction cycle.
 
-  It produces at most one "re-waking" message per child per window, plus one "down" message per
-  stop, on the parent's home channel.
+  It produces at most one message per child per notice type per window on the parent's home
+  channel.
 - **Test:** a delivery pgtest covers five cases: a parented child lost twice inside one window
   gives one notice on the parent's home channel, none on the DM, and no extra child wake; an errored
   child with no owed work gives the "down" notice; a "re-waking" notice followed in the same window
