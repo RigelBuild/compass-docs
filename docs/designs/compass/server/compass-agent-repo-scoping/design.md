@@ -3,8 +3,9 @@
 ## Open Questions
 
 **OQ-1 — Which repositories does an agent hold?** This one is load-bearing.
-A and C let an agent give only repositories it holds. This record counts an
-agent's own agent rows, as `ListAgentForgeScopeRepos` in
+A and C let an agent give only repositories it holds. DL-628 and DL-629 leave
+"held" to this question. The Plan assumes (a) until Matt answers: an agent's
+own agent rows, as `ListAgentForgeScopeRepos` in
 `go/internal/store/forge_scopes.go` reads them: "returns an account's own
 rows, not its owner's grants". Two facts limit that rule:
 
@@ -32,7 +33,7 @@ Options:
   widen").
 
 **Recommendation:** (a). It keeps one rule, adds no code, and leaves reach
-under the owner's control. The plan assumes (a). Under (b),
+under the owner's control. The Plan assumes (a) until Matt answers. Under (b),
 `ListAgentHeldRepos` also returns the owner's exact user rows, and
 `copyHeldRepositories` writes child rows for them. Under (c), a root caller
 also passes when the repository's org has an App installation. The lifecycle
@@ -92,7 +93,8 @@ keeps all of its rules (DL-458):
 
 ### Held repositories
 
-An agent holds a repository when it has its own agent row for it (OQ-1 (a)).
+**Assumption (OQ-1 (a), pending Matt):** an agent holds a repository when it
+has its own agent row for it.
 Agent rows are only exact GitHub `org/name`. The owner RPC writes them with
 `store.ForgeProviderGitHub` and its host, and the full copy ignores provider
 and host. So the new store reads match on `repo` alone, like the full copy.
@@ -104,18 +106,28 @@ held set. That is how the model learns what it may give.
 
 ### A: spawn-time subset
 
-Decision: DL-628. `SpawnPeerRequest` gains `repeated string repositories = 8`.
-Empty copies every parent row (B). Non-empty copies only the named rows.
+Decision: DL-628. `SpawnPeerRequest` gains a presence-aware
+`RepositorySubset repositories = 8`, a message that wraps `repeated string
+values`. Unset copies every parent row (B). Set copies exactly the listed
+repositories the parent holds. A set, empty list copies none.
 
+- **Presence.** A plain proto3 `repeated` field has no presence, so the
+  server could not tell `[]` from unset, and `[]` would mean full
+  inheritance. The wrapper follows `BoardRefsOp` in
+  `proto/compass/v1/comms.proto`: "an empty present list clears them". An
+  empty subset is still a subset of the parent's repositories. It gives a
+  child that needs no agent rows. Owner grants still reach it.
 - **Normalisation.** Each entry goes through `agentRepository` in
   `go/server/agent_repository_service.go`, which accepts "one exact GitHub
   org/name and stores it in lowercase". Duplicates collapse. A bad entry or
   `*` is `INVALID_ARGUMENT` before any account exists.
-- **Copy.** `NewAgent` gains `ParentRepositories []string`. In the
-  `CreateAgent` transaction, `copyHeldRepositories` reads the parent's held
-  set. Any missing entry fails the transaction with `ErrPermissionDenied`, so
-  no account is left and the handle stays free. Otherwise it copies only the
-  named rows. It reads parent rows only, so it never widens.
+- **Copy.** `NewAgent` gains `ParentRepositories *[]string`; nil is the full
+  copy. This follows `BoardTaskPatch.Refs *[]string` in
+  `go/internal/store/agent_boards.go`. In the `CreateAgent` transaction,
+  `copyHeldRepositories` reads the parent's held set. Any missing entry fails
+  the transaction with `ErrPermissionDenied`, so no account is left and the
+  handle stays free. Otherwise it copies only the listed rows. It reads parent
+  rows only, so it never widens.
 - **Order.** The copy moves after `insertAccountHandle`. A taken handle then
   returns `ErrConflict` before the copy runs, and the spawn resumes. Today the
   copy runs first. For B the move changes nothing.
@@ -149,9 +161,27 @@ The server checks, in this order:
 2. The caller's owner resolves (`AgentOwner`), as in spawn.
 3. The target resolves through the despawn resolver, renamed
    `resolvePeerTarget`. "Every miss is the one errPeerNotFound."
-4. The target is in `Store.AgentSubtree(caller)`, so grandchildren count.
-5. `Store.GiveAgentRepositories` copies the caller's rows for the named
-   repositories to the target, all or nothing.
+4. `Store.GiveAgentRepositories` runs one tenant transaction. It takes the
+   owner-tree lock, checks that the target is in the caller's subtree (so
+   grandchildren count), checks that the caller holds every repository, and
+   copies the rows, all or nothing.
+
+**Tree race.** The descendant check and the write must see one tree.
+Otherwise a concurrent `ReparentAgent` can move the target out of the
+caller's subtree between the check and the write, and the grant lands on a
+non-descendant. `ReparentAgent` in `go/internal/store/accounts.go` already
+serialises tree changes per owner:
+
+```go
+if err := qtx.AcquireOwnerTreeLock(ctx, lockKey); err != nil {
+```
+
+`AcquireOwnerTreeLock` is `SELECT pg_advisory_xact_lock(hashtext($1))`. Its
+key is the owner id, and it releases at transaction end. The grant takes the
+same lock first. It then runs the `AgentSubtree` query and the copy in the
+same transaction. A reparent then runs wholly before or wholly after the
+grant. A same-owner target shares the caller's lock key, so every reparent
+that could move it waits.
 
 There is no self check. `AgentSubtree` includes the caller, and a copy onto
 itself conflicts, so nothing is added. There is no `checkOrg`. The row is
@@ -178,17 +208,19 @@ session reads its rows at its next start.
 
 **DL-458.** DL-458 ruled "agents never write rows" (OQ-2). Its OQ-1 rejected
 "an agent-gateway tool (agents would change credentials)". DL-629 amends both
-for this one case, by Matt's ruling. Reach still starts with the owner. Every
-agent row was either written by the owner, or copied or granted from a row an
-ancestor held at the time. A granted row stays when the giver later loses its
-own row, which is the same snapshot rule as the copy. DL-075 does not change.
+for this one case, by Matt's ruling. Reach still starts with the owner. Under
+OQ-1 (a), every agent row was either written by the owner, or copied or
+granted from a row an ancestor held at the time. A granted row stays when the
+giver later loses its own row, which is the same snapshot rule as the copy.
+DL-075 does not change.
 
 ### Errors
 
 | Case | A (spawn) | C (grant) |
 | --- | --- | --- |
 | Malformed repository, or `*` | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` |
-| Empty `repositories` | full copy | `INVALID_ARGUMENT` |
+| `repositories` unset | full copy | n/a |
+| `repositories` set and empty | no rows | `INVALID_ARGUMENT` |
 | A repository the caller does not hold | `PERMISSION_DENIED` | `PERMISSION_DENIED` |
 | Unknown, non-agent, other-owner or other-tenant target | n/a | `NOT_FOUND` |
 | Same-owner target outside the caller's subtree | n/a | `PERMISSION_DENIED` |
@@ -202,9 +234,9 @@ succeeds once the owner adds the row. A target outside the subtree is
 
 ## Alternatives considered
 
-- **A presence wrapper, so an empty list copies nothing.** The `BoardRefsOp {
-  repeated string values = 1; }` shape allows that. Rejected: the ruling keeps
-  the full copy, and the owner can remove rows.
+- **Reject an explicit empty list.** Rejected: a plain `repeated` field has
+  no presence, so only the TS edge could reject `[]`. Any other caller would
+  still get full inheritance.
 - **One repository per C call.** Rejected: one call and one refresh per
   repository, and a different shape from A.
 - **The broker's `grantsChanged` for C.** Rejected: it pushes to the whole
@@ -227,8 +259,9 @@ succeeds once the owner adds the row. A target outside the subtree is
   is C end to end (C1 to C4). PR 2 stacks on PR 1 because both edit
   `agent_gateway.proto`, `forge_scopes.sql`, `lifecycle.go` and
   `lifecycle.ts`.
-- **Field numbers.** `SpawnPeerRequest.repositories = 8`. Field 7 stays free
-  for the planned `profile = 7` in the per-agent overrides record (DL-289).
+- **Field numbers.** `SpawnPeerRequest.repositories = 8`, a `RepositorySubset`.
+  Field 7 stays free for the planned `profile = 7` in the per-agent overrides
+  record (DL-289).
   `LifecycleCallRequest.grant_repository = 4`;
   `LifecycleCallResult.grant_repository = 5`.
 - **No public surface.** `proto/compass/v1/compass.proto`, the CLI and
@@ -250,22 +283,38 @@ succeeds once the owner adds the row. A target outside the subtree is
 
 ## Plan
 
+**Assumption.** The Plan implements OQ-1 (a) until Matt answers. If he picks
+(b) or (c), apply the delta that OQ-1 names. DL-628 and DL-629 hold either
+way.
+
 ### PR 1 — A: spawn-time subset
 
 #### A1 — Proto
 
-In `proto/compass/v1/agent_gateway.proto`, add to `SpawnPeerRequest`:
+In `proto/compass/v1/agent_gateway.proto`:
 
 ```proto
-// Grant scoping, never a clone target (DL-090). Empty copies every parent
-// row; set copies only these (DL-628). Applies only when the handle is new.
-repeated string repositories = 8;
+// A spawn-time repository subset (DL-628). Present means exactly these
+// parent rows; an empty present list copies none.
+message RepositorySubset {
+  repeated string values = 1;
+}
+```
+
+`SpawnPeerRequest` gains:
+
+```proto
+// Grant scoping, never a clone target (DL-090). Unset copies every parent
+// row. Applies only when the handle is new.
+RepositorySubset repositories = 8;
 ```
 
 Its comment "never a repo/ref" becomes "never a clone target". Regenerate.
+Export `RepositorySubsetSchema` from `packages/compass-agent/src/compassv1.ts`.
 
-Interfaces: produces `SpawnPeerRequest.GetRepositories() []string` and TS
-`repositories: string[]`. Tests: proto `lint` and `drift`.
+Interfaces: produces `SpawnPeerRequest.GetRepositories() *RepositorySubset`
+(nil when unset) and TS `repositories?: RepositorySubset`. Tests: proto
+`lint` and `drift`.
 
 #### A2 — Store
 
@@ -298,29 +347,31 @@ In `go/internal/store/forge_scopes.go`:
 
 ```go
 // copyHeldRepositories copies from's rows for repos to to, all or nothing. It
-// lowercases and dedupes repos. A repository from does not hold is
-// ErrPermissionDenied naming the missing and held sets. added lists the rows
-// to did not already hold.
+// lowercases and dedupes repos; empty repos copies nothing. A repository from
+// does not hold is ErrPermissionDenied naming the missing and held sets.
+// added lists the rows to did not already hold.
 func copyHeldRepositories(ctx context.Context, q *db.Queries, from, to AccountID, repos []string) (added []string, err error)
 ```
 
 The error text is `not held: <missing>; held: <held or "none">`.
 `NewAgent` in `go/internal/store/inputs.go` gains `ParentRepositories
-[]string // empty copies every parent row`. In `Store.CreateAgent`, repos
-without a parent is `ErrInvalidArgument`. The copy moves after
-`insertAccountHandle`. It is `copyHeldRepositories` when the field is set, and
-`CopyAgentForgeScopes` otherwise.
+*[]string // nil copies every parent row; non-nil copies only these, possibly
+none`. In `Store.CreateAgent`, a non-nil subset without a parent is
+`ErrInvalidArgument`. The copy moves after `insertAccountHandle`. It is
+`copyHeldRepositories` when the field is non-nil, and `CopyAgentForgeScopes`
+when it is nil.
 
 Interfaces: produces `NewAgent.ParentRepositories` for A3 and
 `copyHeldRepositories` for C2. Pgtests in
 `go/internal/store/forge_scopes_pgtest_test.go`:
 
-- A subset copies only the named parent rows. Mixed case and duplicates
+- A subset copies only the listed parent rows. Mixed case and duplicates
   normalise.
+- A non-nil empty subset copies no rows. A nil subset copies every row.
 - A repository the parent lacks, or reaches only through an owner grant, is
   `ErrPermissionDenied`, and the text names the missing and held sets. No
   account or row remains, and a held retry succeeds.
-- Repos without a parent are `ErrInvalidArgument`.
+- A non-nil subset without a parent is `ErrInvalidArgument`.
 - A taken handle with an unheld subset is `ErrConflict`.
 - A tenant-B parent copies its subset under `WithTenant`. Tenant A sees no
   child.
@@ -331,13 +382,16 @@ In `go/server/agent_repository_service.go`:
 
 ```go
 // agentRepositoryList normalises a list with agentRepository and dedupes it.
+// It returns a non-nil slice, so an empty input stays an empty subset.
 func agentRepositoryList(raw []string) ([]string, error)
 ```
 
-`SpawnAsAccount` calls it after `CheckClientRequestID` and passes the result as
-`NewAgent.ParentRepositories`. A bad entry is `INVALID_ARGUMENT`. Its
-`CreateAgent` switch maps `ErrPermissionDenied` to `PERMISSION_DENIED` and
-`ErrInvalidArgument` to `INVALID_ARGUMENT`, both with the store text.
+`SpawnAsAccount` reads `req.GetRepositories()` after `CheckClientRequestID`.
+When the subset is set, it passes `&list` as `NewAgent.ParentRepositories`,
+where `list` is `agentRepositoryList(subset.GetValues())`. A bad entry is
+`INVALID_ARGUMENT`. The `CreateAgent` switch maps `ErrPermissionDenied` to
+`PERMISSION_DENIED` and `ErrInvalidArgument` to `INVALID_ARGUMENT`, both with
+the store text.
 
 Interfaces: consumes A1 and A2. Produces `agentRepositoryList` for C3.
 Pgtests in `go/server/agent_repository_pgtest_test.go`, using
@@ -345,23 +399,32 @@ Pgtests in `go/server/agent_repository_pgtest_test.go`, using
 
 - The parent holds `owner/a` and `owner/b`. A spawn with `["OWNER/A"]` leaves
   rows `[owner/a]`, and the child's mint covers `a` and `base`.
+- A spawn with a set, empty subset leaves no rows, and the child's mint covers
+  only `base`. A spawn with the subset unset copies every row.
 - An unheld repository is `PERMISSION_DENIED` naming it and the held set. The
   handle stays free, and a held retry succeeds.
 - `*` and `a/b/c` are `INVALID_ARGUMENT`.
-- A spawn without a subset still copies every row.
 - A same-handle replay with another subset returns the same id and rows.
 
 #### A4 — Agent tool and docs
 
 In `packages/compass-agent/src/lifecycle.ts`, `spawnParameters` gains
 `"repositories?": type("string[]")`. Its description says: omit it to give
-every repository you hold, or list exact `org/name` entries you hold to give
-only those; repositories apply only when the handle is new; your owner's
-grants reach every agent. The spawn tool sends `repositories:
-params.repositories ?? []`.
+every repository you hold; list exact `org/name` entries you hold to give only
+those; an empty list gives none; repositories apply only when the handle is
+new; your owner's grants reach every agent. The spawn tool sets the field only
+when the parameter is present:
+
+```ts
+repositories:
+	params.repositories === undefined
+		? undefined
+		: create(RepositorySubsetSchema, { values: params.repositories }),
+```
 
 Interfaces: consumes A1. Tests in `lifecycle.test.ts`: the exact
-`SpawnPeerRequest` with and without `repositories`.
+`SpawnPeerRequest` when the parameter is omitted (field unset), when it is
+`[]` (field set, no values) and when it is `["owner/a"]`.
 
 Docs: `docs/self-host.md` (Agent workstream repositories) states the
 operating model: the owner adds the tree's repositories to the root
@@ -396,20 +459,37 @@ Tests: proto `lint` and `drift`.
 #### C2 — Store
 
 ```go
-// GiveAgentRepositories copies from's rows for repos to to in one tenant
-// transaction, all or nothing. Empty repos is ErrInvalidArgument.
+// GiveAgentRepositories copies from's rows for repos to to, all or nothing,
+// in one tenant transaction under the owner-tree lock. to must be in from's
+// subtree with the same owner, else ErrPermissionDenied. Empty repos is
+// ErrInvalidArgument.
 func (s *Store) GiveAgentRepositories(ctx context.Context, from, to AccountID, repos []string) (added []string, err error)
 ```
 
-It runs `copyHeldRepositories` on `s.q.WithTx(tx)` after `s.beginTenantTx`.
+On `s.q.WithTx(tx)` after `s.beginTenantTx`, it runs in order:
+`GetAgentOwner(from)`, `AcquireOwnerTreeLock(owner)`, the `AgentSubtree`
+query for `from`, then `copyHeldRepositories`. An unknown `from` is
+`ErrNotFound`.
 
-Interfaces: consumes A2. Produces the method for C3. Pgtests:
+Interfaces: consumes A2. Produces the method for C3. Pgtests in
+`go/internal/store/forge_scopes_pgtest_test.go`:
 
 - A give to a grandchild adds the rows. A repeat adds nothing.
+- A target outside `from`'s subtree, and a target with another owner, are
+  `ErrPermissionDenied` and write nothing.
 - A list with one unheld entry is `ErrPermissionDenied` and writes nothing.
 - An empty list is `ErrInvalidArgument`.
-- Under tenant A, a tenant-B `from` holds nothing, so the call is
-  `ErrPermissionDenied`.
+- Under tenant A, a tenant-B `from` is `ErrNotFound`.
+- `TestGiveAgentRepositoriesSerializesWithReparent` follows
+  `TestReparentAgentConcurrentCycleSerialized` in
+  `go/internal/store/agent_tree_test.go`. tx1 takes the owner's advisory
+  lock and moves the target out from under the giver, without committing. A
+  goroutine calls `GiveAgentRepositories`. The test polls `pg_locks` until the
+  grant waits on that key, then commits tx1. The grant is
+  `ErrPermissionDenied`, and the target has no new row. In the control run,
+  tx1 moves the target under the giver instead, and the grant succeeds.
+  Without the lock, the grant reads the old tree and writes, so the test
+  fails.
 
 #### C3 — Server
 
@@ -426,9 +506,12 @@ message becomes "lifecycle call has no variant set". `fakeLifecycleCaller` in
 In `go/server/lifecycle.go`, `lifecycleService` gains `signal
 agentSecretsSignaler`. `newLifecycleService` sets it to the hub, as a nil
 interface when the hub is nil. Rename `resolveDespawnTarget` to
-`resolvePeerTarget`. `GrantRepositoriesAsAccount` runs checks 1 to 5 of the C
-section. When `added` is not empty, it calls `signal.SignalSecretsVersionFor`
-for the target. A signal failure is logged, never returned.
+`resolvePeerTarget`. `GrantRepositoriesAsAccount` runs checks 1 to 3 of the C
+section, then calls `GiveAgentRepositories(caller, target, repos)`. It maps
+`ErrPermissionDenied` and `ErrInvalidArgument` to their codes, with the store
+text, and any other error to `INTERNAL`. When `added` is not empty, it calls
+`signal.SignalSecretsVersionFor` for the target. A signal failure is logged,
+never returned.
 
 Interfaces: consumes C1, C2 and `agentRepositoryList`. Produces the relay arm
 for C4. Tests:
@@ -486,11 +569,11 @@ grant tool: push a repository down to a descendant without the owner.
 
 ## Tasks
 
-- [ ] A1: `SpawnPeerRequest.repositories = 8`, regenerated.
-- [ ] A2: `ListAgentHeldRepos`, `CopyAgentForgeScopeSubset`, `copyHeldRepositories` and the `CreateAgent` subset, with pgtests.
+- [ ] A1: `RepositorySubset` and `SpawnPeerRequest.repositories = 8`, regenerated and exported.
+- [ ] A2: `ListAgentHeldRepos`, `CopyAgentForgeScopeSubset`, `copyHeldRepositories` and the `CreateAgent` subset, with pgtests for set, empty and unset subsets.
 - [ ] A3: `agentRepositoryList` and the spawn subset in `SpawnAsAccount`, with pgtests.
 - [ ] A4: the `repositories` spawn parameter, its TS tests and the root-seeding docs.
 - [ ] C1: the `grant_repository` arms, regenerated and exported.
-- [ ] C2: `Store.GiveAgentRepositories`, with pgtests.
+- [ ] C2: `Store.GiveAgentRepositories` under the owner-tree lock, with pgtests and the reparent interleave test.
 - [ ] C3: `GrantRepositoriesAsAccount`, the relay arm and the targeted signal, with relay tests and pgtests.
 - [ ] C4: `agents_grant_repository`, its TS tests and the doc updates.
