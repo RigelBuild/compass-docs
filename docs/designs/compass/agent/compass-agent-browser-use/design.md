@@ -1,6 +1,6 @@
 # Compass agent browser use
 
-Use the browser only when no suitable vendor API exists. Broker secret fill and capture behind a restricted, isolated browser runtime.
+Use the browser only when no suitable vendor API exists. Keep secret fill and capture inside a restricted browser runtime.
 
 **Grounding.** OMP `browserSchema` (`packages/coding-agent/src/tools/browser.ts`) exposes browser through Eval, not a model tool. `BrowserTabHelpers` (`packages/coding-agent/src/tools/browser/declarations.d.ts`) takes literal `fill` values and exposes `value`/`evaluate`. `tab.run` has “full Bun/Node + tool-bridge access. It is not sandboxed” (`packages/coding-agent/src/prompts/tools/browser.md`). `cfgBrowserEnabled` defaults true (`packages/coding-agent/src/tools/browser/settings.ts`); `sharedBrowserProfileDir` reuses a stable profile (`packages/coding-agent/src/tools/browser/shared-daemon.ts`); `obfuscateTextBlocks` passes image blocks through (`packages/coding-agent/src/secrets/message-transform.ts`).
 
@@ -12,7 +12,7 @@ Tracker: RIG-6007.
 
 ## Open Questions
 
-This design uses the recommendations below. All questions are load-bearing; Matt's ruling is required before the record freezes. Rewrite DL-640 to match Matt's rulings before merge; its current line is not a ruling on these recommendations.
+This design uses the recommendations below. All six questions are load-bearing; Matt's ruling is required before the record freezes. Rewrite DL-640 to match Matt's rulings before merge. The Runner launches the controller as the browser UID; the controller enforces agent-session taint and document bindings.
 
 1. **Read-back lifetime** (load-bearing). (a) Taint the whole agent session until teardown; no post-login inspection. (b) Restore readback after top-level navigation; must also block SPA/history/BFCache and old documents. **Recommendation:** (a); reviewed workflows handle post-login actions.
 
@@ -40,43 +40,43 @@ This proposal uses the Open Questions recommendations. Matt must rule on them be
 
 Use a restricted OMP fork. Disable the full Eval browser prelude. Set `browser.enabled: false` in code after fleet settings. This unconditional override must survive missing or malformed settings.
 
-Run Chromium, CDP driver, and broker client under a dedicated browser UID/sandbox. Model tools cannot read its files or broker socket. Do not expose TCP CDP. Keep CDP on a private pipe, never inherited by shell, Eval, or Python. Expose bounded browser actions only.
+The Runner launches the browser controller for each agent session as the browser UID on every enabled tier. The controller owns Chromium, the private CDP pipe, the per-session profile, broker credential, context/document bindings, and taint state. The model tools call the controller over a session-scoped Unix RPC socket. The controller allows bounded browser operations and enforces taint and ID bindings itself. It never exposes its broker credential or CDP pipe to the model UID.
 
-`browser_fill_secret(context_id, document_id, grant_id, selector)` reads main-frame origin from CDP. Runtime reports it to broker; broker checks the grant allowlist. Origin integrity depends on the isolated runtime. Recheck target, frame, document, and origin before typing. Discard value if any changed. IDs identify runtime-owned target, frame, and loader generation.
+`browser_fill_secret(context_id, document_id, grant_id, selector)` makes the controller read the main-frame origin from CDP. The controller reports that origin to the broker, which checks the grant allowlist. Origin integrity depends on the isolated runtime. Before typing, the controller rechecks the target, frame, document, and origin. It discards the value if any of them changed. The IDs bind to a controller-owned target, frame, and loader generation.
 
-Taint the whole agent session before first secret fill or capture. Keep taint through teardown; navigation and new contexts do not clear it. Return generic status only. Trusted workflows handle post-login steps.
+The controller taints the whole agent session before the first secret fill or credential capture. Taint lasts through teardown. Navigation and new contexts do not clear it. After taint, every model-UID caller gets status only. Trusted workflows handle post-login steps.
 
 ### Generated credentials and motivating workflows
 
-Trusted runtime adapters own secret-bearing actions and capture. They store generated credentials through the broker and return status only. Model cannot choose capture selectors or values.
+Trusted runtime adapters own secret-bearing actions and capture. They store generated credentials through the broker and return status only. The model cannot choose capture selectors or values.
 
-For GitHub App registration, use manifest flow. Runtime owns one-time `state`, validates callback origin/state, then sends conversion code to `POST /app-manifests/{code}/conversions` within one hour. Store returned `pem`, `client_secret`, and `webhook_secret` in granted refs. Trusted adapter submits manifest and confirms; model sees no code or credentials.
+For GitHub App registration, use the manifest flow. The runtime owns one-time `state` and validates the callback origin and state. It then sends the conversion code to `POST /app-manifests/{code}/conversions` within one hour. Store the returned `pem`, `client_secret`, and `webhook_secret` in granted refs. The trusted adapter submits the manifest and confirms; the model sees no code or credentials.
 
-For Linear, use OAuth manifest to prefill form. Adapter captures credentials through fixed selectors on approved origin; fail closed if document/field changes. Selectors and generated-secret fields are [UNVERIFIED]. Use `webhookCreate` when an authorized API grant exists; browser handles login and UI-only confirmation.
+For Linear, use the OAuth manifest to prefill the form. The adapter captures credentials through fixed selectors on the approved origin and fails closed if the document or field changes. The selectors and generated-secret fields are [UNVERIFIED]. Use `webhookCreate` when an authorized API grant exists. The browser handles login and UI-only confirmation.
 
 ### Security boundary and guarantees
 
-RIG-6006 defines `SecretRef(scope, name)` and grants with agent principal, purpose, mode, expiry, and uses. Browser-fill use includes an approved origin allowlist. The runtime reports CDP origin; broker checks it against that allowlist. The broker has no independent page view. Origin integrity depends on browser UID/sandbox. Runtime redeems over the agent-token channel and gets the value once with an audit row. Generated capture binds to a granted ref and workflow. RIG-6006 is not merged; record path: docs/designs/compass/server/compass-secret-broker/design.md.
+RIG-6006 defines `SecretRef(scope, name)` and grants with an agent principal, purpose, mode, expiry, and uses. The browser-fill use includes an approved origin allowlist. The controller reads the origin from CDP and reports it to the broker. The broker checks it against the allowlist but has no independent view of the page. Origin integrity depends on the isolated controller. The controller calls `Redeem` and `CaptureGenerated` only through a browser-UID-only broker socket. Its credential is never written to a model-readable path. No Redeem API is available on `/run/compass/agent.sock` or another model-UID path. RIG-6006 is not merged; its design path is forthcoming: docs/designs/compass/server/compass-secret-broker/design.md.
 
-Brokered values stay out of model input/results, transcripts, screenshots, logs, and diagnostics. The separate browser UID protects the profile and broker client from model process tools. Tainted APIs return no page data after fill. These guarantees depend on UID/sandbox and authenticated broker socket.
+The model does not receive brokered values in tool results, transcripts, screenshots, logs, or diagnostics. The separate browser UID protects the profile, controller, and broker credential from model process tools. The controller returns status only after taint. These guarantees depend on UID/sandbox isolation and the browser-UID-only broker socket.
 
-Values remain visible to the destination site, page scripts, browser process, trusted adapter, and compromised runtime. An approved malicious site can use or exfiltrate them. Firewall cannot limit paths or application behavior on allowed hosts.
+The destination site, its page scripts, the browser process, the trusted controller, and a compromised runtime can still see values. An approved malicious site can use or exfiltrate them. The firewall cannot limit paths or application behavior on an allowed host.
 
-Before taint, observations may enter model context. Taint blocks page data and images until agent-session teardown. Text redaction is not a boundary; OMP passes image blocks through.
+Before taint, observations may enter model context. After taint, the controller blocks page data and images until agent-session teardown. Text redaction is not a security boundary; OMP passes image blocks through.
 
-Use one Chromium process and profile per agent session at `/run/compass/browser/<agent-session>/profile`. The browser UID owns mode 0700 files. Delete the profile at teardown, including abnormal exit. Do not reuse cookies or mount the profile on checkout. Use encrypted backing only when provided. DL-326, DL-089, and DL-093 do not define browser persistence.
+Use one Chromium process and profile per agent session at `/run/compass/browser/<agent-session>/profile`. The browser UID owns the mode 0700 files. Delete the profile at teardown, including after an abnormal exit. Do not reuse cookies or mount the profile on the checkout. Use encrypted backing only when it is provided. DL-326, DL-089, and DL-093 do not define browser persistence.
 
-The Runner tier firewall is the egress boundary. Operators approve login origins and redirects and add their hosts to Runner policy. Grants do not create network access. OMP `allowed_domains` is advisory because `tab.run` has host access. Permit approved browser hosts on TCP 443 only and resolver DNS on port 53. Fail closed on unarmed, unverified, or host tiers. Apple-container firewall support is [UNVERIFIED].
+The Runner tier firewall is the egress boundary. Operators approve login origins and redirects, then add their hosts to Runner policy. Grants do not create network access. OMP `allowed_domains` is advisory because `tab.run` has host access. Permit approved browser hosts on TCP 443 only, and permit DNS only to the resolver on port 53. Fail closed on unarmed, unverified, or host tiers. Apple-container firewall support is [UNVERIFIED].
 
 ### 2FA and headed interaction
 
-Add TOTP as a broker secret kind. Trusted runtime generates and types codes; model sees neither. For GitHub Mobile, send the non-credential two-digit match number to the human through trusted Compass ask. Return only yes/no and number selection to runtime. Do not send them through model chat. SMS, passkeys, and hardware keys remain unsupported until trusted input exists. Do not show headed browser to model; any human view needs separate authorization and no model-visible screenshots or controls.
+Add TOTP as a broker secret kind. The trusted runtime generates and types the codes; the model sees neither. For GitHub Mobile, send the non-credential two-digit match number to the human through the trusted Compass ask flow. Return only the yes/no answer and number selection to the runtime. Do not send them through model chat. SMS, passkeys, and hardware keys remain unsupported until trusted input exists. Do not show the headed browser to the model. Any human view needs separate authorization and must expose no screenshots or controls to the model.
 
 ### Audit
 
-Record broker redemptions and generated-secret captures with tenant, agent, session, grant, operation, approved origin host, timestamp, and outcome. Never log values. Store append-only `browser_audit_events` under DL-311 tenant RLS. Log browser actions and denials. Exclude selectors, URL paths/queries, page text, form values, cookies, headers/bodies, HAR, and screenshots.
+Record broker redemptions and generated-secret captures with tenant, agent, session, grant, operation, approved origin host, timestamp, and outcome. Never log values. Store events in append-only `browser_audit_events` under DL-311 tenant RLS. Log browser actions and denials. Exclude selectors, URL paths and queries, page text, form values, cookies, headers and bodies, HAR, and screenshots.
 
-Prune daily after 90 days. `agent_activity` (`go/internal/store/migrations/0001_init.sql`) is mutable, not an event log. `StoreResolver.ResolveFor` (`go/internal/secrets/store_resolver.go`) says DB resolution has “no provider audit log.” `UsageEventRetention` (`go/server/serve.go`) is not browser policy.
+Prune rows daily after 90 days. `agent_activity` (`go/internal/store/migrations/0001_init.sql`) is mutable, not an event log. `StoreResolver.ResolveFor` (`go/internal/secrets/store_resolver.go`) says DB resolution has “no provider audit log.” `UsageEventRetention` (`go/server/serve.go`) is not browser policy.
 
 ## Alternatives considered
 
@@ -86,14 +86,15 @@ OMP's full Eval allows readback, and text redaction misses page data and images.
 
 ## Global Constraints
 
-- Use documented APIs first; browser automation is fallback-only.
-- Run Chromium, CDP, and broker client under a separate browser UID/sandbox. Model tools cannot read its profile or broker socket.
+- Use documented APIs first. Treat browser automation as fallback-only.
+- Run Chromium, CDP, and the broker client under a separate browser UID and sandbox. Do not let model tools read the profile or broker socket.
 - Disable OMP's browser Eval prelude unconditionally in code after fleet settings. Do not depend on the optional fleet overlay.
-- Taint the whole agent session before first secret fill or credential capture; keep it tainted through teardown and context changes.
-- Broker checks the runtime-reported CDP origin against the grant allowlist. Origin integrity depends on the separate runtime boundary.
-- Enforce egress at the tier firewall. Allow browser hosts on TCP 443 only and resolver DNS on port 53. OMP `allowed_domains` is advisory. Require an armed firewall.
-- Store private per-session profiles at `/run/compass/browser/<agent-session>/profile`, mode 0700, owned by the browser UID, outside checkout and model-readable paths. Delete at teardown. Bake pinned Chromium into the image; disable runtime downloads.
-- Keep secret values out of model input/results, transcripts, screenshots, logs, and diagnostics. Do not claim protection against destination sites, browser/runtime compromise, or unsafe allowed-host behavior.
+- Taint the whole agent session before the first secret fill or credential capture. Keep it tainted through teardown and across context changes.
+- Require the Runner to launch the controller as the browser UID on every enabled tier. Keep the model-tool RPC on a session-scoped socket and the broker RPC on a separate browser-UID-only socket. Enforce taint and document bindings in the controller.
+- Require the broker to check the origin reported by CDP against the grant allowlist. Origin integrity depends on the separate runtime boundary.
+- Enforce egress at the tier firewall. Allow browser hosts on TCP 443 only and DNS only to the resolver on port 53. Treat OMP `allowed_domains` as advisory. Require an armed firewall.
+- Store private per-session profiles at `/run/compass/browser/<agent-session>/profile`, mode 0700, owned by the browser UID, outside checkout and model-readable paths. Delete them at teardown. Bake pinned Chromium into the image and disable runtime downloads.
+- Keep secret values out of model input and results, transcripts, screenshots, logs, and diagnostics. Do not claim protection against destination sites, browser/runtime compromise, or unsafe allowed-host behavior.
 
 ## Plan
 
@@ -103,37 +104,33 @@ Sequence: T1 and T3 can start in parallel. T8 uses T3's browser UID and profile 
 
 **Lane:** compass Go server/runner.
 
-**Interfaces:** `SecretRef(scope, name)`; grant `{grant_id, ref, agent_principal, purpose, mode: once|session|standing, expires_at, uses[]}`; use `{consumer_kind, binding}`; browser-fill use adds `{origin_allowlist}`. `Redeem(grant_id, use, runtime_reported_origin) -> value_once`; `CaptureGenerated(grant_id, use, runtime_reported_origin, value) -> audit_row`. Broker checks the reported origin against the grant allowlist. Its integrity depends on the isolated runtime boundary. Coordinate with forthcoming docs/designs/compass/server/compass-secret-broker/design.md.
+**Interfaces:** `SecretRef(scope, name)`; grant `{grant_id, ref, agent_principal, purpose, mode: once|session|standing, expires_at, uses[]}`; use `{consumer_kind, binding}`; browser-fill use adds `{origin_allowlist}`. `Redeem(grant_id, use, runtime_reported_origin) -> value_once`; `CaptureGenerated(grant_id, use, runtime_reported_origin, value) -> audit_row`. Expose both only through a browser-UID-only broker socket. Never write its credential to a model-readable path. Do not expose a Redeem endpoint through `/run/compass/agent.sock` or another model-UID channel. The broker checks reported origin against the grant allowlist; origin integrity depends on the isolated controller. Coordinate with forthcoming docs/designs/compass/server/compass-secret-broker/design.md.
 
-**Test cycle:** Enforce principal, use, origin allowlist, expiry, once grants, value-free audit, and grant-bound capture.
+**Test cycle:** Enforce principal, use, origin allowlist, expiry, once grants, value-free audit, and grant-bound capture. Verify model-UID processes cannot redeem through the agent socket.
 
 ### T3 — Per-session profile and pinned browser binary
 
 **Lane:** agent-image nix and compass Go runner; independent of T1.
 
-**Interfaces:** Create a dedicated browser UID. Create `/run/compass/browser/<agent-session>/profile`, owned by that UID with mode 0700; delete at session teardown. Bake pinned Chromium into `agent-image/toolchain.nix`; pass its fixed path to the isolated driver.
+**Interfaces:** The Runner creates a dedicated browser UID and the directory `/run/compass/browser/<agent-session>/profile`. It sets the directory owner to that UID and permissions to 0700. It deletes the directory at session teardown. Bake pinned Chromium into `agent-image/toolchain.nix` and pass its fixed path to the isolated controller.
 
-**Test cycle:** Verify model UID cannot read profile. Verify sessions do not share state, teardown removes profile, browser matches driver, and no runtime download occurs.
+**Test cycle:** Verify the model UID cannot read the profile. Verify that sessions do not share state and that teardown removes the profile. Verify that the browser binary matches the driver and that no runtime download occurs.
 
-### T8 — Isolated browser runtime boundary
+### T8 — Isolated browser controller and broker boundary
 
 **Lane:** compass Go server/runner; depends on T3.
 
-**Interfaces:** Run the browser controller and broker client as the dedicated UID created by T3. Keep CDP on a private pipe. Expose an authenticated broker socket only to that UID.
+**Interfaces:** Runner launches one controller per agent session as the browser UID on every enabled tier. Controller RPC: `BrowserOpen(url) -> {context_id, document_id}`, `BrowserGoto(context_id, url) -> document_id`, `BrowserClick(context_id, document_id, selector) -> status`, `BrowserObserve(context_id, document_id) -> summary|status`, `BrowserFillSecret(context_id, document_id, grant_id, selector) -> status`, `BrowserCaptureVendorCredentials(context_id, document_id, grant_id, workflow) -> status`. Use a session-scoped Unix socket for model-tool RPC and a separate browser-UID-only broker socket. The controller owns context/document binding and taint state.
 
-**Test cycle:** Run bash, Eval, Python, and process-spawning tools as the model UID. Verify none can open the broker socket or CDP pipe.
+**Test cycle:** Verify the model UID cannot open the broker socket or read its credential, profile, or CDP pipe. Verify its process cannot redeem via `/run/compass/agent.sock` or another path. After taint, call controller RPC as model UID and confirm it returns status only, including across contexts and navigation.
 
-### T2 — Restricted browser runtime and vendor workflows
+### T2 — Restricted browser tools and vendor workflows
 
 **Lane:** compass-agent TS and OMP fork; depends on T1, T3, and T8.
 
-**Interfaces:** Model tools: `browser_open(url) -> context_id`; `browser_goto(context_id, url) -> document_id`; `browser_click(context_id, document_id, selector) -> status`; `browser_observe(context_id, document_id) -> summary` only before taint; `browser_fill_secret(context_id, document_id, grant_id, selector) -> status`; `browser_capture_vendor_credentials(context_id, document_id, grant_id, workflow) -> status`. Runtime-only: `Redeem(grant_id, use, reported_origin)` and `CaptureGenerated(grant_id, use, reported_origin, value)`. No model-supplied capture selector or value. Enforce `browser.enabled: false` after fleet settings in code, not `buildFleetSettings`.
+**Interfaces:** Model tools proxy controller RPC: `browser_open(url) -> {context_id, document_id}`; `browser_goto(context_id, url) -> document_id`; `browser_click(context_id, document_id, selector) -> status`; `browser_observe(context_id, document_id) -> summary|status`; `browser_fill_secret(context_id, document_id, grant_id, selector) -> status`; `browser_capture_vendor_credentials(context_id, document_id, grant_id, workflow: "github_app" | "linear_oauth_app") -> status`. No model-supplied capture selector or value. Enforce `browser.enabled: false` after fleet settings in code, not `buildFleetSettings`.
 
-**Test cycle:** With fleet settings absent, confirm the Eval browser prelude is disabled. Repeat with malformed settings.
-
-Verify model tools cannot read profile files or connect to the broker socket. Confirm no `run`, `evaluate`, `value`, screenshot, HAR, or page-data output is exposed.
-
-Race navigation against redemption; confirm fill is rejected. Confirm GitHub manifest conversion succeeds and credentials reach only broker capture. Change the Linear selector; confirm capture fails closed. Confirm taint persists through new tabs and contexts until session teardown.
+**Test cycle:** With fleet settings absent and malformed, confirm the Eval browser prelude is disabled. Confirm model tools cannot read profile files, connect to broker socket, or expose `run`, `evaluate`, `value`, screenshot, HAR, or page-data output. Race navigation against redemption and confirm rejection. Verify GitHub conversion capture and fail-closed Linear selector changes. Verify controller taint persists through new tabs and contexts until teardown.
 
 ### T4 — Workload-wide HTTPS egress for browser hosts
 
@@ -155,9 +152,9 @@ Race navigation against redemption; confirm fill is rejected. Confirm GitHub man
 
 **Lane:** compass Go server/runner and compass-agent TS; depends on T1 and T2.
 
-**Interfaces:** `TotpSecretKind`; runtime-only `generateAndFillTotp(context_id, document_id, grant_id, selector) -> status`. Trusted prompt: `RequestPushApproval(agent_session_id, vendor, displayed_match_number?) -> {approved, selected_match_number?}`. Deliver the non-credential GitHub two-digit number to the human only. Send the answer directly to trusted runtime, not model chat. Reject SMS, passkeys, and hardware keys without trusted input.
+**Interfaces:** `TotpSecretKind`; the runtime-only method `generateAndFillTotp(context_id, document_id, grant_id, selector) -> status`. The trusted prompt is `RequestPushApproval(agent_session_id, vendor, displayed_match_number?) -> {approved, selected_match_number?}`. Deliver the non-credential GitHub two-digit number to the human only. Send the answer directly to the trusted runtime, not model chat. Reject SMS, passkeys, and hardware keys without trusted input.
 
-**Test cycle:** Verify TOTP stays out of model results/logs. Verify human sees the GitHub number and only the selected yes/no result reaches trusted runtime. Reject unsupported challenges without chat leakage.
+**Test cycle:** Verify TOTP stays out of model results and logs. Verify the human sees the GitHub number and only the selected yes/no result reaches the trusted runtime. Reject unsupported challenges without chat leakage.
 
 ### T7 — Cross-tier browser security and workflow tests
 
@@ -165,15 +162,15 @@ Race navigation against redemption; confirm fill is rejected. Confirm GitHub man
 
 **Interfaces:** `FakeGitHubManifestServer` exposes manifest submission and conversion endpoints. `FakeLinearAppForm` serves registration and generated-secret fields. `RunBrowserSecurityMatrix(tier WorkloadTier, h Harness) error` runs each enabled tier with these fakes, broker, and Runner firewall.
 
-**Test cycle:** Assert secrets and tainted page data are absent from model results, transcripts, screenshots, logs, and audit. Test origin races, process/profile/socket isolation, session taint, unsupported tiers, capture, and cleanup. Run GitHub and Linear separately on each enabled tier.
+**Test cycle:** Assert that secrets and tainted page data are absent from model results, transcripts, screenshots, logs, and audit. Test origin races, process/profile/socket isolation, session taint, unsupported tiers, capture, and cleanup. Run GitHub and Linear tests separately on each enabled tier.
 
 ## Tasks
 
-- [ ] T1 — Add origin-bound browser fill and workflow-bound generated-secret capture to the RIG-6006 broker contract; test principal, origin, use, expiry, and value-free audit.
-- [ ] T3 — Bake pinned Chromium into the agent image and create isolated per-agent-session profiles with teardown cleanup; test binary match, isolation, and deletion.
-- [ ] T8 — Isolate browser UID/sandbox, private CDP pipe, and authenticated broker socket; test profile and socket denial from model-process tools.
-- [ ] T2 — Add the restricted OMP driver and Compass tools; disable `browser.enabled` and implement GitHub/Linear workflows; test taint, race rejection, and capture.
-- [ ] T4 — Add TCP 443-only Runner egress for approved browser hosts and resolver-only DNS; test allowed HTTPS and denied hosts/ports.
-- [ ] T5 — Add tenant-RLS append-only audit events with 90-day pruning; test redaction, isolation, append-only behavior, and expiry.
-- [ ] T6 — Add brokered TOTP and trusted push approval including GitHub number matching; test protected code flow and unsupported factors.
-- [ ] T7 — Test browser security and vendor workflows across enabled tiers; verify isolation, readback, audit, and teardown.
+- [ ] T1 — Add origin-bound browser fill and workflow-bound generated-secret capture to the RIG-6006 broker contract. Test principal, origin, use, expiry, and value-free audit.
+- [ ] T3 — Bake pinned Chromium into the agent image and create isolated per-agent-session profiles with teardown cleanup. Test binary match, isolation, and deletion.
+- [ ] T8 — Isolate the browser UID and sandbox, private CDP pipe, and authenticated broker socket. Test profile and socket denial from model-process tools.
+- [ ] T2 — Add the restricted OMP controller and Compass tools. Disable `browser.enabled` and implement GitHub and Linear workflows. Test taint, race rejection, and capture.
+- [ ] T4 — Add TCP 443-only Runner egress for approved browser hosts and resolver-only DNS. Test allowed HTTPS and denied hosts and ports.
+- [ ] T5 — Add tenant-RLS append-only audit events with 90-day pruning. Test redaction, isolation, append-only behavior, and expiry.
+- [ ] T6 — Add brokered TOTP and trusted push approval, including GitHub number matching. Test protected code flow and unsupported factors.
+- [ ] T7 — Test browser security and vendor workflows across enabled tiers. Verify isolation, readback, audit, and teardown.
