@@ -1,11 +1,13 @@
 # Stack marker detection in PR descriptions (RIG-5587)
 
-<!-- LENGTH §Plan: frozen interfaces, steps and pinned test bytes for four executor tasks -->
+<!-- LENGTH §Plan: three executor tasks plus one parked task -->
 
 ## Open Questions
 
-Questions 1, 2 and 4 are load-bearing and go to Matt on one human-action
-issue. They do not depend on each other. T3 is parked on question 4.
+Questions 1, 2 and 4 are load-bearing. Matt rules on them in RIG-6034. They
+do not depend on each other. T3 is parked on question 4.
+
+DL-637 text and status are finalized from the RIG-6034 ruling before merge.
 
 1. **Old blocks that the new reader no longer finds (load-bearing).** Today's
    reader is lexical, so it finds every block that jj-vine wrote. The new
@@ -72,12 +74,13 @@ issue. They do not depend on each other. T3 is parked on question 4.
    old block, then an indented example. Whether each forge keeps line breaks
    in stored titles was not checked.
    1. Join the lines of each title with spaces (T3), so generated text cannot
-      hide its end marker. Step 4 returns the description unchanged and warns;
-      only the join case reaches it. Cost: stack bytes change for a title with
-      a line break, which renders broken today.
-   2. Return the description unchanged and warn, and leave titles as they
-      are. No user text is rewritten. Cost: a PR with such a title keeps a
-      stale stack until the title changes.
+      hide its end marker. Step 4 returns the current description unchanged
+      and warns; only the join case reaches it. Cost: stack bytes change for a
+      title with a line break, which renders broken today.
+   2. Return the current description unchanged and warn, and leave titles as
+      they are. No user text is rewritten. Cost: until the title changes, the
+      PR keeps a stale stack, and with `description.sync` on its text is not
+      synced either.
    3. Write no block and warn, built as `join_parts(&[before, after])`. Cost:
       the stack disappears, and in the join case the next submit reads the
       example as a real block and deletes it.
@@ -141,52 +144,50 @@ table option on, a probe gave the same HTML block starts, so it is not needed.
 ### The writer: keep only a layout the reader finds again
 
 The reader alone cannot solve the hard case from #47 rounds 5 and 6. When the
-user text ends inside an open fence or an open HTML block, a block written
-below it becomes part of that block. The reader does not find it, and every
-submit adds one more block.
+user text ends inside an open fence or HTML block, a block written below it
+becomes part of that block. The reader does not find it, and every submit adds
+one more block.
 
-So the writer checks its own output. It builds a candidate description, runs
-the reader on it, and keeps it only when the reader finds exactly the new
-block, at the offset where the writer put it. For an empty stack, the reader
-must find no block.
+So the writer checks its own output. It builds a candidate, runs the reader on
+it, and keeps it only when the reader finds exactly the new block at the
+offset where the writer put it. For an empty stack, the reader must find no
+block.
 
 1. Build the candidate for the configured placement. `Bottom` is the user
    text, then the block. `Top` is the block, then the user text. An empty
    stack gives the user text only, joined as today.
 2. Check the candidate. If it passes, keep it.
 3. If the `Bottom` candidate fails, the user text ends inside an open block.
-   Build and check the top candidate. This is candidate direction 2 of
-   RIG-5587, but the writer does not ask the parser which block is open.
-4. If no candidate passes, return the existing description unchanged. A
-   block that the reader cannot find would be added again on every submit.
-   Open Question 4 lists what reaches this step.
+   Build and check the top candidate. This is direction 2 of RIG-5587, but the
+   writer does not ask the parser which block is open.
+4. If no candidate passes, return the PR's current description unchanged,
+   because a block that the reader cannot find is added again on every
+   submit. With `description.sync` on, the user text is new commit text, not
+   the current description, so the writer gets the current description as a
+   separate argument. Open Question 4 lists what reaches this step.
 
-The writer also returns which candidate it kept. The submit command then
-warns about the PR when the block falls back to the top and the description
-changes, and on every submit that reaches step 4, because that stack stays
-stale until the user acts.
+The writer also returns which candidate it kept. Submit warns about the PR
+when the block falls back to the top and the description changes, and on
+every submit that reaches step 4.
 
 The output is stable. For one jj-vine version and fixed user text, the next
-submit reads the same user text, keeps the same candidate and returns the same
-bytes. `UpdateMRTitleDescriptionAction` then reports `MRUpdateType::Unchanged`
-and sends no edit. The reason is that the choice depends only on the user
-text. The stack body comes after the new start marker, so it cannot change
-whether that marker is real. It can only hide the end marker, and then every
-candidate fails. The output changes only when:
+submit keeps the same candidate and returns the same bytes, so
+`UpdateMRTitleDescriptionAction` reports `MRUpdateType::Unchanged`. The choice
+depends only on the user text. The stack body comes after the new start
+marker, so it cannot change whether that marker is real. It can only hide the
+end marker, and then every candidate fails. The output changes only when:
 
 - the user edits the text, for example closes the fence, and the block moves
   back to the bottom;
 - an older jj-vine also submits the PR (see note (f));
 - a title gains or loses a line break, if T3 does not ship;
 - an empty stack removes a block that has no text before it. The result starts
-  with a newline, which the next submit trims. This is today's behaviour.
+  with a newline, which the next submit trims, as today.
 
-Cost: the reader parses the existing text once, and the writer parses one or
-two candidates. Each parse is linear in the text length.
-
-`remove_jj_vine_stack_from_description` uses the same reader. So the sync
-check in `src/submit/plan.rs` no longer sees a change when a description holds
-a marker example.
+Each parse is linear in the text length, and the writer parses at most three
+texts per PR. `remove_jj_vine_stack_from_description` uses the same reader,
+so the sync check in `src/submit/plan.rs` no longer sees a change when a
+description holds a marker example.
 
 ### Cases
 
@@ -197,7 +198,7 @@ a marker example.
 | (c) raw HTML | A marker example inside `<details>` or `<pre>` | The example stays. |
 | (d) unclosed fence | The text ends inside an open fence, with or without a marker example | The bottom check fails. The block goes to the top. The example stays. |
 | (e) unclosed HTML | The text ends inside an open comment, `<pre>`, `<script>`, `<style>`, `<textarea>`, CDATA, processing instruction or declaration | The bottom check fails. The block goes to the top. |
-| (f) old descriptions | A block written by an earlier jj-vine | Replaced once, when its start marker begins an HTML block and no title hides its end marker. |
+| (f) old descriptions | A block written by an earlier jj-vine | Replaced once, except in the shapes of Open Question 1. |
 | (g) CRLF | Any case above with CRLF line ends | Same result. The reader trims the `\r`, and the writer joins with `\n`. |
 
 Notes on the cases:
@@ -220,55 +221,34 @@ Notes on the cases:
 - (e) An open `<div>` or `<details>` also ends at a blank line, so the bottom
   check passes. Only the HTML block kinds that end at a closer string move the
   block.
-- (f) Open Question 1 lists the old shapes that the new reader does not find.
-  If an older jj-vine and this one both submit a PR that ends inside an open
-  block, each one rewrites the other's block on every submit. DL-558 removes
-  jj-vine from Compass agents, so this mix does not last.
+- (f) If an older jj-vine and this one both submit a PR that ends inside an
+  open block, each one rewrites the other's block on every submit. DL-558
+  removes jj-vine from Compass agents, so this mix does not last.
 - Bare CR line ends are not supported, the same as today.
 
 ### Forge renderers
 
 Correctness does not depend on the forge. The reader and the writer use the
-same parser, so the check holds whatever the forge renders. The forge renderer
-changes only how the text looks, on GitHub, GitLab, Forgejo or Azure.
-
-The known differences between pulldown-cmark 0.13.4 and GFM make the reader
-keep more markers as user text, not fewer. pulldown-cmark ends a `<textarea>`
-block only at `</textarea>`, like `<pre>`, and GFM ends it at a blank line.
-pulldown-cmark starts a declaration block at `<!` and any ASCII letter, and
-GFM needs an uppercase letter. GFM's tag filter escapes tags such as
-`<textarea>` when it renders HTML, after block parsing, so it does not change
-which blocks exist.
+same parser, so the check holds whatever GitHub, GitLab, Forgejo or Azure
+render. The known differences from GFM make the reader keep more markers as
+user text, not fewer ([evidence](evidence.md#pulldown-cmark-and-gfm-differences)).
 
 ### Dependency
 
 pulldown-cmark 0.13.4 comes back, as in commit `5355d640` on #47:
 `pulldown-cmark = { version = "0.13.4", default-features = false }`. The lock
-file gains pulldown-cmark 0.13.4 and unicase 2.10.0. Its other dependencies,
-bitflags and memchr, are already in the lock. Without default features it
-does not build the `getopts` binary or the HTML renderer. The main branch of
+file gains pulldown-cmark 0.13.4 and unicase 2.10.0. Without default features
+it does not build the `getopts` binary or the HTML renderer. The main branch of
 pulldown-cmark adds a default `std` feature and fails to build without `std`
-or `hashbrown`. When a release has it, add `features = ["std"]`. The lock file,
-which the nix build also reads, keeps 0.13.4 until then.
-
-Adoption, from crates.io on 2026-10-19:
-
-- MIT license, repository `raphlinus/pulldown-cmark`, Rust 1.71.1 or later.
-- 179.9 million downloads and 1,867 crates that depend on it.
-- `just` 1.59.0 depends on `^0.13.4`. `clap_derive` 4.6.7 and `prost-build`
-  0.14.4 depend on 0.13 as an optional dependency.
-- Its README states the goal of 100% CommonMark compliance.
+or `hashbrown`. When a release has it, add `features = ["std"]`. The lock
+file, which the nix build also reads, keeps 0.13.4 until then. The adoption
+that RIG-5565 B asks for is in [evidence](evidence.md#adoption).
 
 ### Upstream
 
-The design works upstream too. The reader does not depend on placement.
-Upstream v0.5.4 has a two-argument `insert_stack_into_description` with no
-`StackPlacement`, and it puts the block where the first block was. The writer
-check works the same way for that layout: build `before`, the block, then
-`after`, check the block at its offset, and fall back to the top layout. A
-prototype of that layout passed every case in the table. An upstream port also
-needs the every-block splitter from `split_around_stack_blocks`. Upstream
-`MRUpdate` has the same `warnings` field.
+The design works upstream too, for the v0.5.4 layout that puts the block where
+the first block was. The port notes are in
+[evidence](evidence.md#upstream-port).
 
 ## Alternatives considered
 
@@ -328,7 +308,7 @@ pub(crate) enum StackLayout {
     Configured,
     /// `Bottom` failed the check, so the block is at the top.
     TopFallback,
-    /// No candidate passed, so the existing description is returned as is.
+    /// No candidate passed, so the current description is returned as is.
     Kept,
 }
 
@@ -349,15 +329,18 @@ fn join_parts(parts: &[&str]) -> String;
 // Same signature; built on stack_block_ranges and trim_blank_lines.
 fn split_around_stack_blocks(description: &str) -> (String, String);
 
-/// The writer: the new description and the candidate it kept.
+/// The writer: the new description and the candidate it kept. The blocks in
+/// `user_description` are replaced; `current_description` is the fallback.
 #[must_use]
 pub(crate) fn place_stack(
     stack_description: &str,
-    existing_description: &str,
+    user_description: &str,
+    current_description: &str,
     placement: StackPlacement,
 ) -> (String, StackLayout);
 
-// Same signature; returns place_stack(..).0.
+// Same signature. Returns
+// place_stack(stack_description, existing_description, existing_description, placement).0.
 pub fn insert_stack_into_description(
     stack_description: &str,
     existing_description: &str,
@@ -388,12 +371,12 @@ Steps:
    instead of `str::trim`. `trim_blank_lines` finds the first
    non-whitespace character, slices from the start of its line, and calls
    `trim_end`. It returns `""` for an all-whitespace segment.
-5. `place_stack`: split the existing text into `before` and `after`, then
+5. `place_stack`: split `user_description` into `before` and `after`, then
    apply [the writer section](#the-writer-keep-only-a-layout-the-reader-finds-again).
    - Empty stack: the candidate is today's empty-stack output (`before`, then
      `\n{after}` when `after` is not empty). Keep it with `Configured` when
      `stack_block_ranges` finds no block in it. Otherwise return
-     `existing_description` with `Kept`.
+     `current_description` with `Kept`.
    - Otherwise `block` is
      `format!("{START_MARKER}\n{stack_description}\n{END_MARKER}")`. A check
      passes when `stack_block_ranges(&candidate) == [start..start.strict_add(block.len())]`.
@@ -403,7 +386,7 @@ Steps:
    - Top: the candidate is `join_parts(&[&block, &before, &after])`, with
      `start = 0`. Keep it with `Configured` for `Top` and `TopFallback` for
      `Bottom`.
-   - Else return `existing_description.to_owned()` with `Kept`.
+   - Else return `current_description.to_owned()` with `Kept`.
 
    These candidates give the same bytes as the current branches.
 6. Doc comment on `insert_stack_into_description`: "Insert or replace the
@@ -451,7 +434,7 @@ Every test that writes a description checks the second call.
 | `remove_keeps_marker_examples` | `remove_jj_vine_stack_from_description` with (a) |
 | `stack_that_hides_its_end_marker_keeps_description` | writer step 4, block at the end and at offset 0 |
 | `removal_that_exposes_an_example_keeps_description` | writer step 4, the join case, also with an empty stack |
-| `place_stack_reports_layout` | `Configured`, `TopFallback` and `Kept` |
+| `place_stack_reports_layout` | `Configured`, `TopFallback` and `Kept`; on `Kept` it returns `current_description`, not `user_description` |
 
 These tests pin these bytes:
 
@@ -523,8 +506,11 @@ Steps:
    HTML block, so the stack block is at the top". `Kept` gives "jj-vine
    could not write a stack block that it can find again, so the stack block
    is not updated". Everything else gives `None`.
-2. `UpdateMRTitleDescriptionAction::execute`: call `place_stack` in place of
-   `insert_stack_into_description`. Map
+2. `UpdateMRTitleDescriptionAction::execute`: replace the
+   `insert_stack_into_description` call with
+   `place_stack(&stack_description, description_user_part, current_mr.description(), ctx.execute.config.description.placement)`.
+   On `Kept` the result equals `current_mr.description()`, so
+   `description_unchanged` is true and no edit deletes the stack. Map
    `stack_layout_warning(layout, !description_unchanged)` to
    `vec![format!("{} {}: {warning}", ctx.execute.forge.mr_name(), ctx.execute.forge.format_merge_request_id(current_mr.iid()))]`.
    Set the result in both `MRUpdate` values that now hold `warnings: None`.
@@ -543,6 +529,12 @@ Tests:
   `Intro\n\n```md\ncode` and `Bottom`. The first run gives one warning. A
   second run, with the updated MR in `SubmissionPlan.existing_mrs`, gives
   `MRUpdateType::Unchanged` and `warnings: None`.
+- `execute_keeps_current_description_when_title_hides_end_marker`: the same
+  setup with `Bottom`, an MR titled `"Hidden\n<!-- note"` whose description is
+  `format!("User notes\n\n{START_MARKER}\nOld stack\n{END_MARKER}")`, and an
+  action built with `.description(Some("Synced notes".to_owned()))`. The
+  result is `MRUpdateType::Unchanged` with the `Kept` warning, and the
+  TestForge description is still the old one.
 - `summary_keeps_warnings_of_dropped_updates`: a `Created` and a warned
   `Updated` entry for one PR, and two `Unchanged` entries for another, the
   second warned. Two rows and both warnings come back.
