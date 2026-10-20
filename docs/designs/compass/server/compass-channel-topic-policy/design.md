@@ -3,9 +3,10 @@
 Tracking: RIG-5951 (owner lane compass-server).
 Ruling: Matt, 2026-10-19, Option A. `routing` is automation-only; the
 supervisor reads it, triages, and dispatches. DMs default to AGENTS_ONLY;
-humans reply inside existing threads. Recorded as DL-631 and DL-632. Matt
-also said `routing` is automation-only for *posting*; Open Question 1 covers
-the conflict that creates.
+humans reply inside existing threads. DL-631 and DL-632 record this for
+agent–agent DMs and for topic starts in `routing`. DMs with a user party
+are Open Question 2. Matt also said `routing` is automation-only for
+*posting*; Open Question 1 covers the conflict that creates.
 Related: RIG-5950 (compass#2492) makes the UI send `create_topic` when it
 starts a topic. RIG-5958 (compass#2499) makes `InsertTopicIgnore` report
 whether it created a row.
