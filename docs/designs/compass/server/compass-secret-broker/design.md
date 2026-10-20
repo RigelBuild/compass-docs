@@ -217,9 +217,19 @@ message SecretRequest { string request_id = 1; SecretRef ref = 2; string purpose
 ```
 
 ```proto
-rpc Secret(SecretCallRequest) returns (SecretCallResult); // AgentGateway
+rpc Secret(AgentSecretCallRequest) returns (SecretCallResult); // AgentGateway, agent socket: no fill
+rpc FillSecret(BrokerFillRequest) returns (RelaySecretCallResponse); // Runner-served, browser-UID-only broker socket; carries the value to the runtime
 rpc RelaySecretCall(RelaySecretCallRequest) returns (RelaySecretCallResponse); // RunnerService
-message SecretCallRequest {
+message BrokerFillRequest { FillSecretCall fill = 1; string origin = 2; } // origin from the runtime's own CDP state
+message AgentSecretCallRequest {
+  string call_id = 1;
+  oneof call {
+    RequestSecretRequest request = 2;
+    GetSecretRequestCall get_request = 3;
+    CancelSecretRequestCall cancel_request = 4;
+  }
+}
+message SecretCallRequest { // Runner-to-Server relay form only.
   string call_id = 1;
   oneof call {
     RequestSecretRequest request = 2;
@@ -253,7 +263,7 @@ message RelaySecretCallRequest {
 }
 message RelaySecretCallResponse {
   SecretCallResult result = 1;
-  bytes secret_value = 2 [debug_redact = true]; // Internal Runner response only; strip before agent response.
+  bytes secret_value = 2 [debug_redact = true]; // Runner forwards only to the session's browser runtime; never to the agent socket.
   int64 expires_at_unix_ms = 3;
 }
 ```
