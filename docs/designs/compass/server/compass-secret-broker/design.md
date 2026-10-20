@@ -294,6 +294,7 @@ Before enabling fill, RIG-6007 must keep the filled browser outside agent code-e
 - [ ] T2 — Add broker-value set/delete, request creation, list, review, agent cancellation/status, and approver grant revocation APIs plus the single `Secret` call family and relay. Test auth-derived identity, AGENT-ref rejection, ownership, decision races, use-subset validation, expiry caps, authority loss, and revocation.
 - [ ] T3 — Build the trusted Runner host tool path, origin-bound redemption, once-read locking, audit, live-agent-binding checks and session-only binding-version checks, and error-only agent results. Test foreign Runner, missing binding, stale session binding, wrong grant, origin mismatch, read-failure retry, redaction, and absence of model-visible values.
 - [ ] T4 — Add the private Settings approval panel and polling of the caller-authorized request snapshot. Test that a USER owner sees only their own requests; a tenant admin sees only approvable requests in their tenant; and no caller sees another tenant's requests.
+- [ ] T5 — Implement and test the RIG-6007 browser-isolation, credential-field, frame-origin, screenshot/accessibility-redaction, and navigation-race preconditions before enabling fill.
 
 ## Ledger delta
 
