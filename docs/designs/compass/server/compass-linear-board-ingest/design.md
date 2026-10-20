@@ -94,7 +94,7 @@ Linear has no board lane, so no RIG issue reaches the board. Matt ruled option
 A on RIG-5949: build a Linear board lane on the same `Ingester` the GitHub lane
 uses, fed by a Linear list call in the reconciler and by Linear `Issue`
 webhooks, both writing through `IssueProjection.PublishIssueUpdate`. The
-`issues` table stays a mirror of forge issues. Seeding the GitHub repo
+`issues` table stays a projection of forge issues. Seeding the GitHub repo
 subscriptions of a deployment is out of scope.
 
 ## Approach
@@ -107,6 +107,10 @@ ruling, and fixes the gaps found since.
 ### D1 One Ingester, two feeds
 
 Ledger: DL-630.
+
+For Linear, `issues` is a projection of the subscribed teams' issues, scoped
+by the cold-start and drift policy in OQ-2 and OQ-5. It is not a full copy of
+each team.
 
 The lane is the GitHub board lane with a Linear client. No new ingest type:
 
@@ -319,6 +323,13 @@ Read the state id, name and type, and list updated issues.
   `pageInfo` like `ListIssues`. A zero `since` uses the OQ-2(c) filter:
   `or: [{state: {type: {in: ["started", "unstarted"]}}}, {updatedAt: {gte:
   now-30d}}]`. Rows with a zero `UpdatedAt` are skipped, as on GitHub.
+- Any page error fails the whole walk, with no rows. That includes
+  `hasNextPage` with an empty cursor: return `forge: linear list updated
+  issues %q: next page has no cursor`, as `ListCommentsSince` does.
+  `ListIssues` stops silently there instead. A partial walk must never
+  reach `sinkRows`, or its max `updatedAt` would advance the watermark past
+  the pages it never read. `reconcileRepo` returns a list error before
+  `sinkRows`, so the watermark stays put.
 - Golden fixtures: refresh `list_issues.json` and `get_issue.json`; add
   `list_updated_issues.json` and `list_updated_issues_cold.json`.
 
@@ -334,8 +345,9 @@ func (l *Linear) ListUpdatedIssues(ctx context.Context, team string, since time.
 ```
 
 Tests: the request filter for a set and a zero `since`; two pages; a malformed
-page (`hasNextPage` with an empty cursor) stops; `RATELIMITED` returns
-`ErrBudgetExhausted`; `UpdatedRows.Pulls` is always nil.
+page (`hasNextPage` with an empty cursor) on page 2 returns the error and no
+rows; `RATELIMITED` on page 2 returns `ErrBudgetExhausted` and no rows;
+`UpdatedRows.Pulls` is always nil. T4 tests the watermark.
 
 ### T2 Schema and coordinate-scoped store (store)
 
@@ -447,7 +459,9 @@ func setCommsLinearTeams(ctx context.Context, c *comms.Comms, cfg ForgeConfig, s
 
 Tests: flag parsing (valid, lowercase input, too long, empty); the seed is
 bootstrap-only; (pgtest) a sweep against the fake Linear upserts `RIG-1` and
-`RIG-2` under provider 4 and advances the team watermark; a signed `Issue`
+`RIG-2` under provider 4 and advances the team watermark; a sweep whose fake
+page 2 has `hasNextPage` with an empty cursor upserts no row and leaves the
+watermark unchanged; a signed `Issue`
 webhook through `NewLinearWebhookHandler` reaches both the notify sink and the
 board sink, and the row changes; the GitHub sweep never lists `RIG`; seeding
 `RIG` makes `GetRefLinkRules` return the Linear rule; a `KEY-N` board ref
