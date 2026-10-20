@@ -64,15 +64,16 @@ the tree before any cap exists (spawn quotas are deferred to RIG-1574).
 
 ### Q4. What parallelism target goes in the prompts?
 
-- **(a) Up to 10 concurrent subagents per Manager, round-robin back over them.** This matches the
-  ruling. The fleet settings pin `task.maxConcurrency: 10`.
+- **(a) Up to 10 concurrent subagents per Manager, cycling back to each as it reports.** This
+  matches the ruling. The fleet settings set the task concurrency cap to 10.
 - **(b) No number; tell the Manager to parallelise every independent slice.** The SDK default stays
   at 32.
 - **(c) A number per role.** For example 10 for `manager`, 3 for `owner` and 1 for `supervisor`.
 
-**Recommendation: (a), with the cap at 10 for every role.** The ruling names ten. A pinned setting
-makes it a fact about the runtime, not a hope about the prompt, and it bounds per-container load. The
-coordinator split already keeps upper tiers from doing implementation, so a per-role number adds
+**Recommendation: (a), with the cap at 10 for every role.** The ruling names ten. The fleet setting
+makes the runtime queue spawns past ten, so the prompt does not have to count, and it bounds
+per-container load. An overlay can replace the setting (see [Parallel dispatch](#parallel-dispatch)).
+The coordinator split already keeps upper tiers from doing implementation, so a per-role number adds
 little.
 
 ### Q5. How flat is the default tree?
@@ -107,25 +108,40 @@ A worker is an in-process `task` subagent ("There is deliberately **no `worker` 
 `docs/concepts/agent-roles.md`). Its completion stays inside the Manager's own session:
 
 - **Async mode is on by default.** The SDK default for `async.enabled` is `true`
-  (`config/settings-schema.ts` in `@oh-my-pi/pi-coding-agent` 18.0.11), and Compass's shipped
-  `settings` overlay is empty (`config/profiles/default/profile.yml`: "settings: … {}").
+  (`config/settings-schema.ts` in `@oh-my-pi/pi-coding-agent` 18.0.11), and no fleet
+  `config/settings/config.yml` exists on `main` to override it.
 - **A finished job is pushed into the session.** `AgentSession.#deliverAsyncJobResult` enqueues the
   result on the yield queue as an `async-result` entry. The registration comment says: "completions
   for jobs this agent owns are injected into THIS session's run as async-result follow-ups".
-- **An idle Manager wakes.** `YieldQueue` schedules an idle flush when the session is not streaming
-  (`#scheduleIdleFlush`), and the flush injects the result as a new turn.
+  compass-agent creates the first session in the process, so it owns the `AsyncJobManager`.
+- **An idle Manager wakes.** When the session is not streaming, `YieldQueue` schedules an idle flush
+  (`#scheduleIdleFlush`), and `injectIdle` starts a turn. compass-agent tracks that turn through
+  `agent_start`/`agent_end` like any other.
 
-So the Manager loop the prompt describes already works without polling
-(`config/prompts/manager/SYSTEM.md`: "dispatch subagents -> end turn -> resume"). A prompt change is
-enough for parallel dispatch; no transport change is needed.
+So the Manager loop the prompt describes works without polling
+(`config/prompts/manager/SYSTEM.md`: "dispatch subagents -> end turn -> resume").
+
+**One gap.** compass-agent starts its own turns with `this.#session.agent.prompt(...)`
+(`packages/compass-agent/src/agent.ts`), not `session.prompt`. Those turns skip the SDK's
+in-flight bookkeeping, so `yieldQueue.requestIdleFlush()` never runs when they end. A result that is
+enqueued after the loop's last aside poll, but before `agent_end` clears streaming, waits until the
+next message arrives. With ten workers, the last completion can strand this way. T1 fixes it:
+compass-agent calls `session.yieldQueue.requestIdleFlush()` on each terminal `agent_end`.
+
+**Workers die with the Manager process.** A config-version change makes the runner reload the agent
+(`agentHost.refreshOneContainer` → `reloadLocked` → `stream.Stop` in `go/internal/runner/host.go`).
+A reload kills every in-process subagent and its pending result, and the manager prompt already says
+"in-flight work is lost, so re-dispatch". At ten workers, one reload can lose ten slices. T1's
+prompt rule tells the Manager to re-dispatch unfinished slices on resume, using its board's task
+list. Shipping T1's own settings file is a bundle change that reloads every agent, so it lands
+outside an active wave.
 
 A **standing child Manager** is different. `agents_spawn_peer` returns once the server has
 provisioned and started the child (`lifecycleService.SpawnAsAccount` in `go/server/lifecycle.go`).
-Its later work reaches the parent only as an explicit DM report. Lifecycle changes
-(`AGENT_SESSION_STATE_STOPPED`, `AGENT_SESSION_STATE_ERRORED`) go to the event stream and presence
-(`Hub.deliverSession` in `go/internal/runnerhub/hub.go`), not to the parent. A child that crashes
-therefore goes silent until the parent pulls `compass_roster` or `compass_tree`. T5 closes that gap
-with a system-sender notice to the parent.
+Its later work reaches the parent only as an explicit DM report. When the child's session is lost,
+the server already re-wakes the child itself: `Consumer.OnSessionLost` queues it, and
+`Consumer.drainLost` wakes it with a capped backoff after an errored exit
+(`go/internal/delivery/settle.go`). The parent is not told. T5 adds that notice.
 
 ### Parallel dispatch
 
@@ -134,12 +150,20 @@ The `manager` prompt already calls the Manager "a COORDINATOR, not a typist", an
 says how many workers to run, so the agent runs one at a time. The change:
 
 - The three role prompts and `management-trees` gain one rule: dispatch every independent slice at
-  once, up to 10 concurrent subagents (Q4). Above 10, queue the rest and start one as each finishes.
+  once (Q4). The runtime holds the rest: each async `task` job waits on the session's spawn
+  semaphore (`TaskTool.#spawnSemaphore`, sized by `task.maxConcurrency`), so the Manager never holds
+  slices back across turns.
 - Every parallel worker gets its own jj workspace. The Compass `jj` skill already teaches this
   ("Workspaces — one per parallel subagent", `config/skills/jj/SKILL.md`).
-- The fleet settings document `settings/config.yml` pins `task.maxConcurrency: 10`. The bundle door
-  admits that member (`settingsMember` in `go/cmd/compass/bundle.go`), and the agent loads it as a
-  read-only overlay (`readMountedSettingsPath` in `packages/compass-agent/src/config-reader.ts`).
+- A new fleet settings document `config/settings/config.yml` sets the cap as nested YAML
+  (`task:` / `maxConcurrency: 10`); `Settings.get` resolves by path and ignores a flat dotted key.
+  The bundle door admits that member (`settingsMember` in `go/cmd/compass/bundle.go`), and the agent
+  loads it as a read-only overlay (`readMountedSettingsPath` in
+  `packages/compass-agent/src/config-reader.ts`).
+- The cap is a default, not a lock. Config layers replace `settings/config.yml` as a whole file
+  (`applyConfigLayer` in `go/internal/store/agent_config_merge.go`), so a tenant, user or role
+  overlay that ships its own settings file drops back to the SDK default of 32 unless it repeats the
+  key. Locking it is out of scope.
 - The `supervisor` and `cto` dispatch mostly to the tree, not to subagents, so the cap rarely binds
   for them.
 
@@ -198,13 +222,13 @@ thresholds are prompt guidance; Q3 (c) would move them into a server check.
 - **A single root that does both routing and direction (option A).** Matt ruled option B.
 - **Raising parallelism with more standing Managers instead of subagents.** Each standing node
   costs a handle and a container. DL-134 rejects per-implementer containers.
-- **A transport change for worker completion.** It is not needed, because completion is already
-  pushed (above).
+- **A transport change for worker completion.** It is not needed: completion is already pushed, and
+  the one stranding gap is a one-line flush call in compass-agent (T1).
 
 ## Global Constraints
 
 - The role set grows from three to four (`supervisor`, `owner`, `manager`, `cto`) only if Matt picks
-  Q2 (a). `store.IsManagerRole` stays the single server check.
+  Q2 (a). Every hard-coded role list changes together (T2).
 - Role prompts live at `config/prompts/<role>/SYSTEM.md`; a new role needs a prompt before the server
   accepts it, or the agent boots on the default prompt.
 - Workers stay in-process `task` subagents (DL-134). This record adds no worker tree nodes.
@@ -216,20 +240,37 @@ thresholds are prompt guidance; Q3 (c) would move them into a server check.
 ### T1 — Parallel dispatch in prompts and settings `[config]`
 
 - Add the dispatch rule (Q4) to `config/prompts/{supervisor,owner,manager}/SYSTEM.md` and the
-  "Scope the subagent" section of `config/skills/management-trees/SKILL.md`.
-- Add `config/settings/config.yml` with `task.maxConcurrency: 10`.
-- **Interfaces:** consumes the bundle `settingsMember`; produces no API.
-- **Test:** a config-materialize test asserts the setting reaches the overlay
-  (`cli.config-passthrough.test.ts` already covers `settings/config.yml`).
+  "Scope the subagent" section of `config/skills/management-trees/SKILL.md`: dispatch every
+  independent slice at once, and on resume re-dispatch any slice the board shows unfinished.
+- Add `config/settings/config.yml` with nested `task:` / `maxConcurrency: 10`. Ship it outside an
+  active wave, because the bundle change reloads every agent.
+- In compass-agent's `#trackTurn` (`packages/compass-agent/src/agent.ts`), call
+  `session.yieldQueue.requestIdleFlush()` on each terminal `agent_end`.
+- **Interfaces:** consumes the bundle `settingsMember` and the SDK's public
+  `YieldQueue.requestIdleFlush()`; produces no API.
+- **Test:** a passthrough test asserts `settings.get("task.maxConcurrency") === 10`, as
+  `cli.config-passthrough.test.ts` does for `compaction.keepRecentTokens`. An agent test enqueues an
+  async result just before `agent_end` and asserts a follow-up turn starts; it fails without the
+  flush call.
 
 ### T2 — The `cto` role `[compass-server + config]`
 
-- Add `cto` to `managerRoles` in `go/internal/store/types.go`; update the `CreateAgentRequest.role`
-  and `SpawnPeerRequest.role` proto comments to list four roles.
+- Add `cto` everywhere the three roles are listed:
+  - `managerRoles` in `go/internal/store/types.go`;
+  - the `role` union and its description in `spawnParameters`
+    (`packages/compass-agent/src/lifecycle.ts`), which rejects other roles before the server sees
+    them;
+  - the `ta.role IN ('supervisor', 'owner', 'manager')` filters in
+    `go/internal/store/queries/agent_config.sql`, then regenerate `go/internal/store/db`;
+  - the `CreateAgentRequest.role` and `SpawnPeerRequest.role` proto comments.
 - Add `config/prompts/cto/SYSTEM.md`: no lane, no routed work, owns direction, priorities, design
   intake and the final review pass; reports to the operator on its home channel.
-- **Interfaces:** `store.IsManagerRole("cto") == true`; the spawn and create paths accept it.
-- **Test:** the existing role-validation tests gain a `cto` case; an unknown role still fails.
+- The root `supervisor` spawns the `cto` with `agents_spawn_peer` after operator approval, like any
+  other node. Seeding stays root-only (`seedRootSupervisor`).
+- **Interfaces:** `store.IsManagerRole("cto") == true`; `agents_spawn_peer` and `CreateAgent` accept
+  it; a role-scoped config overlay for `cto` applies.
+- **Test:** the role-validation tests gain a `cto` case and an unknown role still fails; a lifecycle
+  tool test accepts `cto`; an agent-config pgtest shows a `cto` role overlay is selected.
 
 ### T3 — Tree-shape guidance and the concepts doc `[docs + config]`
 
@@ -245,27 +286,37 @@ thresholds are prompt guidance; Q3 (c) would move them into a server check.
 
 ### T5 — Child lifecycle notice to the parent `[compass-server]`
 
-- When a standing child's session reaches `AGENT_SESSION_STATE_ERRORED` or
-  `AGENT_SESSION_STATE_STOPPED` without a despawn, post a system-sender (DL-191) message on the
-  parent/child DM. The parent then wakes on a normal delivery.
-- **Interfaces:** consumes `Hub.deliverSession` lifecycle transitions; produces one message per
-  transition on the existing DM channel.
-- **Test:** a runnerhub test drives `ERRORED` for a parented child and asserts one message on that
-  DM; a despawned child produces none.
+- Hook the server's existing `SessionLostSink` path (`Consumer.OnSessionLost` →
+  `Consumer.drainLost` in `go/internal/delivery/settle.go`), not `Hub.deliverSession`. Container
+  loss and Runner-unknown sessions reach only that path, and `AGENT_SESSION_STATE_STOPPED` is always
+  a deliberate stop.
+- On a loss for an agent with a parent, post one system-sender (DL-191) message on the **parent's
+  home channel**, through `comms.PostAsAccount` after `EnsureChannelMember`, as `postSetupThread`
+  does (`go/server/serve_seed.go`). It is not the parent/child DM: the child is a mandatory member of
+  that DM, and a system post there would wake the lost child at once and skip the errored-wake
+  backoff.
+- Rate-limit to one notice per child per backoff window, so a crash loop does not wake the parent on
+  every cycle. The notice says the server is already re-waking the child.
+- **Interfaces:** consumes `OnSessionLost(sessionID, account, errored)` and the account's
+  `parent_agent_id`; produces at most one message per child per window on the parent's home channel.
+- **Test:** a delivery pgtest loses a parented child twice inside one window and asserts one notice
+  on the parent's home channel, none on the DM, and no extra wake of the child; a root agent's loss
+  produces none.
 
 ## Tasks
 
-- [ ] T1 — Parallel dispatch rule plus `task.maxConcurrency: 10`
+- [ ] T1 — Parallel dispatch rule, the concurrency cap of 10, and the idle-flush call
 - [ ] T2 — `cto` role and prompt (after Q1, Q2)
 - [ ] T3 — Tree-shape guidance and concepts doc (after Q5)
 - [ ] T4 — Spawn-proposal template (after Q3)
-- [ ] T5 — Child lifecycle notice on the parent DM
+- [ ] T5 — Rate-limited lost-child notice on the parent's home channel
 
 ## Ledger delta
 
-- **DL-643:** a worker's completion reaches its Manager as an async-result push; parallel dispatch
-  needs prompt and settings changes only.
-- **DL-644:** Managers dispatch independent slices in parallel, up to 10 concurrent subagents.
+- **DL-643:** a worker's completion reaches its Manager as a pushed async-result follow-up;
+  compass-agent requests an idle flush after each turn it drives so no result strands.
+- **DL-644:** Managers dispatch every independent slice at once; the fleet settings cap concurrent
+  subagents at 10 and the runtime queues the rest.
 - **DL-645:** coordination splits into a `supervisor` coordinator and a separate `cto`.
-- **DL-646:** a standing child's unexpected stop or error posts a system-sender notice on its
-  parent DM.
+- **DL-646:** a standing child's session loss posts one rate-limited system-sender notice on its
+  parent's home channel.
