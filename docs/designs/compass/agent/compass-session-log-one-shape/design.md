@@ -77,9 +77,9 @@ cannot fill the gap (RIG-5945). Postgres
 session-file lines. Live sends `EventMapper` `SessionEvent`s, and no mapping
 exists between the two. After a Server redeploy the UI also has no session id
 for an idle agent, because its account-to-session map comes from in-memory
-`agentSessionStatus` events. Subagent sessions never reach the store: OMP's
-task executor opens them with the default file storage, so the tee never sees
-them (RIG-5943).
+`agentSessionStatus` events. Subagent sessions never reach the store: OMP
+opens them with the default file storage at spawn and at both revive paths,
+so the tee never sees them (RIG-5943).
 
 Intent: one data model for live, history and archive; a log that opens for
 any agent from durable state; and running subagents listed in their parent's
@@ -91,9 +91,14 @@ log, each with its own log.
 
 Matt ruled on RIG-5945 (2026-10-19) that the data model is aligned end to end
 (DL-635). Q1 is open. This record plans option 1, where the model is the OMP
-session-file entry (`SessionEntry`, `session/session-entries.ts`). Live also
-carries short-lived deltas for the message in progress. The Server never
-stores them, and the committed entry replaces them.
+session-file entry (`SessionEntry`, `session/session-entries.ts`). OMP commits
+an entry whole, at `message_end`. Live also carries deltas for the message in
+progress, one frame per text, thinking or tool-output chunk, as `EventMapper`
+streams today. The Server never stores them, and the committed entry replaces
+them. Session state (STARTING, WORKING, READY, STOPPED, ERRORED) and
+`batch_pending` stay transient `AgentSessionFrame` fields: they have no entry,
+and history never replays them. Injections and stream errors or aborts have no
+OMP entry, so they become Compass custom entries (D3) and reach history too.
 
 ### D1 Wire shapes
 
@@ -114,7 +119,7 @@ message SessionLiveEvent {
   }
 }
 message SessionLiveText {
-  int64 message_timestamp = 1; // AssistantMessage.timestamp, ms
+  uint64 live_seq = 1; // agent's message number, per process (A4)
   uint32 content_index = 2;
   bool thinking = 3;
   string delta = 4;
@@ -131,27 +136,50 @@ as `splitSegmentLines` (`runnerhub/reconstruct.go`) does, and never parses a
 line.
 
 Deltas ride the loss-tolerable spine and rows ride the durable lane, so they
-can arrive in either order. The UI therefore:
+can arrive in either order. OMP has no message id that both carry: it mints
+entry ids at persist time, and two assistant messages can share a `timestamp`
+millisecond. So the agent numbers messages itself. `LiveSeq` (A4) starts a new
+number at the first assistant `message_start` or `message_update` after the
+last assistant `message_end`, and keeps the number of that last end. Text
+deltas carry the current number as `live_seq`. OMP persists a message only
+after it emits `message_end` (`#processAgentEvent`, `agent-session.ts`). So the
+tee's stamp, `TranscriptEntry.ended_live_seq`, is never below the number of
+the message a row holds, and always below the number of the message in
+progress. The hub relays the stamp with the row and does not store it. The UI
+keeps the highest stamp it has seen, and:
 
-- drops a text delta at or before the newest committed assistant
-  `message.timestamp`, and a tool delta whose `tool_call_id` has a committed
-  `toolResult`;
-- clears matching provisional rows when an entry commits;
+- drops a text delta whose `live_seq` is at or below it, and a tool delta
+  whose `tool_call_id` has a committed `toolResult`;
+- clears provisional text at or below it when a row arrives;
 - clears all provisional rows on any state other than WORKING. This covers
   turns OMP never commits, such as classifier refusals.
 
+OMP sends `message_update` to subscribers at once but queues `message_start`
+and `message_end` (`#emitSessionEvent`), so a next message's first deltas can
+arrive before the last `message_end`. They then carry the last number. A
+stamp is read when the tee frames a row, after its local write, so it can run
+ahead of rows in flight. Both errors are safe: a number can only be too low
+and a stamp only too high, so the worst case is provisional text hidden until
+its row lands, never text shown twice. The mark is per process, so the UI
+resets it on STARTING and on every subscribe. A backfilled row has no stamp,
+so a stale delta after a resubscribe shows until the next row or state change
+clears it.
+
 `AgentSessionFrame` reserves `event = 2` and adds `SessionLogRow row = 5`,
-`SessionLiveEvent live = 6`, `SessionBatchPending batch_pending = 7` and
-`bool resync_required = 8`. The internal `SessionFrame` reserves
-`typed_event = 2` and adds `live = 4` and `batch_pending = 5`.
+`SessionLiveEvent live = 6`, `SessionBatchPending batch_pending = 7`,
+`bool resync_required = 8` and `uint64 ended_live_seq = 9` (set with `row`).
+The internal `SessionFrame` reserves `typed_event = 2` and adds `live = 4` and
+`batch_pending = 5`. `TranscriptEntry` adds `uint64 ended_live_seq = 4`.
 
 ### D2 History, the live boundary, and resubscribe
 
-History is the current file: the latest checkpoint row, then later Postgres
-rows and `safety_valve` segments. This is the set `SessionResumeSnapshot`
-(`store/agent_transcripts.go`) reads for a resume. The `superseded` and
-`session_end` segments are never read (`FlushSuperseded` keeps `session_end`
-rows in Postgres). So a normal session reads no S3 object.
+History is the current file. The tee's `writeFull` sends a checkpoint row that
+replaces every earlier row, so history is the latest checkpoint row, then
+later Postgres rows and `safety_valve` segments. This is the set
+`SessionResumeSnapshot` (`store/agent_transcripts.go`) reads for a resume.
+The `superseded` and `session_end` segments are never read
+(`FlushSuperseded` keeps `session_end` rows in Postgres). So a normal session
+reads no S3 object.
 
 ```proto
 rpc ListSessionLog(ListSessionLogRequest) returns (ListSessionLogResponse);
@@ -205,8 +233,9 @@ again.
 
 ### D3 Compass data in the session file
 
-The agent writes live-only data with `SessionManager.appendCustomEntry`. A
-`CustomEntry` stays out of the model context.
+The agent writes Compass data that has no OMP entry with
+`SessionManager.appendCustomEntry`. A `CustomEntry` stays out of the model
+context.
 
 | customType | data | Written when |
 |---|---|---|
@@ -225,10 +254,11 @@ stay transient. `traceparent` keeps the DL-303 link.
 ### D4 The emitter
 
 `EventMapper` (`packages/compass-agent/src/mapping.ts`) keeps its lifecycle
-arms and emits `SessionLiveEvent` for text, thinking and tool deltas. For an
-error it returns a note, which `agent.ts` writes as `compass.session_error`.
-The plan, diff, notice and `SessionEvent` arms go. The UI fold reads the same
-`details` from `toolResult` entries. The root tee is unchanged.
+arms, so session state stays a transient frame. It emits one
+`SessionLiveEvent` per text, thinking or tool-output chunk, stamped through
+`LiveSeq` (D1). For an error it returns a note, which `agent.ts` writes as
+`compass.session_error`. The plan, diff, notice and `SessionEvent` arms go.
+The UI fold reads the same `details` from `toolResult` entries.
 
 ### D5 UI types and rendering
 
@@ -252,10 +282,13 @@ Matt ruled on RIG-5943 (2026-10-19) that subagents show in the Session Log
 pane as in the OMP TUI, and that a click on one opens its current Session Log
 (DL-636). Q8 and Q9 hold the open parts.
 
-- **Capture.** B1 opens subagent files with the parent's storage, so the tee
-  sees them. The tee routes a write by an exact path-to-id map filled from
-  `task:subagent:lifecycle` `started` events (`sessionFile`, `id`), with one
-  seq counter per file.
+- **Capture.** B1 opens every subagent file with the parent's storage: at
+  spawn, at a warm revive, and at a cold revive of a parked ref. So the tee
+  sees all their writes. A revived turn emits lifecycle `started` again with
+  its `sessionFile` (`attachIrcWakeTurnMonitor`, `runSubagentFollowUpTurn`,
+  `task/executor.ts`). The tee routes a write by an exact path-to-id map
+  filled from those `started` events (`sessionFile`, `id`), with one seq
+  counter and one `LiveSeq` per subagent.
 - **Keying (Q4).** `BindLifetime` bumps the root's `lifetime_epoch`.
   `EnsureSubagentSession` mints a child row keyed by (root, epoch, task id),
   copying `agent_account_id` and `tenant_id`, so
@@ -289,6 +322,9 @@ sends the same request.
 - **A side table (Q6).** A second store with a second order to merge.
 - **A hand-written entry mirror (D5).** No OMP type dependency, but a test of
   the mirror either fails on unmapped variants or passes every change.
+- **A timestamp or OMP persistence key on deltas (D1).** Two messages can
+  share a millisecond, and `responseId` is optional and provider-specific
+  (`sessionMessagePersistenceKey`, `session/turn-persistence.ts`).
 
 ## Global Constraints
 
@@ -317,9 +353,9 @@ Add the D1 and D2 messages and fields as written, without subagent fields.
 `SessionEvent` stays until A6.
 
 Interfaces: `ListSessionLog`; `SessionLogRow`, `SessionLogPosition`,
-`SessionLiveEvent`; `AgentSessionFrame` fields 5 to 8;
+`SessionLiveEvent`; `AgentSessionFrame` fields 5 to 9;
 `SubscribeAgentSessionRequest.after_entry_seq = 2`; internal `SessionFrame`
-fields 4 and 5.
+fields 4 and 5; `TranscriptEntry.ended_live_seq = 4`.
 
 Tests: `buf lint` and generated code compile.
 
@@ -346,25 +382,38 @@ reads leaves no gap.
 Interfaces:
 
 - `SessionTailSink` (`runnerhub/hub.go`) adds
-  `RelaySessionRow(sessionID string, row *compassv1.SessionLogRow)`. For a
-  checkpoint row, `sessionTail` sends `resync_required` and closes the
+  `RelaySessionRow(sessionID string, row *compassv1.SessionLogRow, endedLiveSeq uint64)`.
+  For a checkpoint row, `sessionTail` sends `resync_required` and closes the
   subscribers.
-- `Hub.commitFrame` relays the row when the append returns `inserted`.
+- `Hub.commitFrame` relays the row with the entry's `ended_live_seq` when the
+  append returns `inserted`.
 - `func (s *Service) ListSessionLog(ctx context.Context, req *compassv1.ListSessionLogRequest) (*compassv1.ListSessionLogResponse, error)`.
 - `SubscribeAgentSession` runs the D2 steps. `toPublicFrame` maps `live`,
   `batch_pending` and `state`.
 - `go/e2e/agent_ops.go` reads injections from `compass.injection` rows.
 
-Tests: a commit between register and read arrives once; each
-`resync_required` cause; NotFound for unknown and forbidden targets.
+Tests: a commit between register and read arrives once; a relayed row carries
+its `ended_live_seq`; each `resync_required` cause; NotFound for unknown and
+forbidden targets.
 
 ### A4 Agent emitter (lane: compass-agent)
 
 Interfaces (`packages/compass-agent/src`):
 
+- `live-seq.ts`:
+  `class LiveSeq { observe(event: AgentSessionEvent): void; current(): bigint; lastEnded(): bigint }`.
+  `observe` applies the D1 rule to session events and replaces
+  `EventMapper.#messageSeq`.
 - `mapping.ts`: `MapOutput = OutboundFrame | UnmappedEvent | NoteOutput`,
   with
   `type NoteOutput = { kind: "note"; customType: "compass.session_error"; data: SessionErrorNote }`.
+  The constructor takes the `LiveSeq`, and text deltas carry
+  `live_seq = current()`.
+- `session-tee.ts`: `TranscriptTeeOptions.endedLiveSeq?: () => bigint`;
+  `#nextFrame` sets `TranscriptEntry.ended_live_seq` from it.
+- `cli.ts` `main` makes one `LiveSeq` and passes it to the tee options and
+  `CompassAgentOptions.liveSeq`. `agent.ts` `run()` calls `observe` in its
+  `session.subscribe` listener, before `map`.
 - `session-notes.ts`:
   `class SessionLogNotes { constructor(manager: Pick<SessionManager, "appendCustomEntry">); injection(n: InjectionNote): void; error(n: SessionErrorNote): void }`.
 - `agent.ts`: `#emitInjection` calls `SessionLogNotes.injection`.
@@ -372,7 +421,10 @@ Interfaces (`packages/compass-agent/src`):
 
 Tests: no `SessionEvent` frame; a classifier refusal writes one
 `compass.session_error`; custom entries leave a resumed model context
-unchanged.
+unchanged; two assistant messages with the same `timestamp` get different
+`live_seq` values; each row's `ended_live_seq` is at least its message's
+`live_seq`; a `message_update` before the last `message_end` never gets a
+higher number than its message.
 
 ### A5 UI (lane: compass-frontend)
 
@@ -388,15 +440,17 @@ Interfaces:
   with `type LogLine = { pos: SessionLogPosition; entry: SessionLogEntry }`.
   `foldSession` and `adaptSessionEvent` go.
 - `live/session-tail.ts`:
-  `SessionFrameUpdate { row?: SessionLogRow; live?: SessionLiveEvent; batchPending?: BatchPending | null; state?: AgentSessionState; resync?: true }`.
+  `SessionFrameUpdate { row?: SessionLogRow; endedLiveSeq?: bigint; live?: SessionLiveEvent; batchPending?: BatchPending | null; state?: AgentSessionState; resync?: true }`.
 - `store.ts` `createLiveSessions`: per session
-  `{ lines, headSeq, nextBefore, live }` and
+  `{ lines, headSeq, nextBefore, live, endedLiveSeq }` and
   `loadOlder(sessionId: string): Promise<void>`; opens by session or account
   id.
 
 Tests, written first: stored entries with no live frames render on open
 (RIG-5941); open by account id after a fake redeploy; no duplicate at the
-boundary; resync; the D1 delta rules in both arrival orders.
+boundary; resync; the D1 delta rules in both arrival orders; two messages in
+the same millisecond, with deltas before and after each row, show each text
+once and never drop the newer one early.
 
 ### A6 Cleanup (lane: compass-server)
 
@@ -406,11 +460,31 @@ Log as a consumer.
 
 ### B1 OMP upstream (owner: compass-agent)
 
-Interfaces: `SessionManager` gains `get storage(): SessionStorage`.
-`task/executor.ts` opens a subagent with
-`SessionManager.open(sessionFile, undefined, parentStorage, { initialCwd, suppressBreadcrumb: true })`.
+Interfaces:
 
-Tests: a subagent write goes through a custom parent storage.
+- `SessionManager` gains `get storage(): SessionStorage`.
+- `ToolSession.getSessionStorage?: () => SessionStorage`, set in `sdk.ts`
+  beside `getArtifactManager`.
+- `ExecutorOptions.parentSessionStorage?: SessionStorage`, set beside
+  `parentArtifactManager` in `task/structured-subagent.ts` and
+  `vibe/runtime.ts`.
+- `task/executor.ts`: the spawn and the warm `reviveSession` closure pass
+  `options.parentSessionStorage` as the `storage` argument of
+  `SessionManager.open` and keep their current options.
+- `task/persisted-revive.ts`: the cold revive passes
+  `ctx.session.sessionManager.storage` to both `peekSessionInit` and `open`.
+  An indexed storage that does not hold the file, such as the tee after a
+  restart, then fails the peek, so the ref stays transcript-only. Without the
+  peek change, `open` would treat the file as missing and rewrite it as a new
+  session.
+
+compass-agent installs no cold-revive factory today (only the CLI `main.ts`
+does), but B1 covers it so a later install keeps the tee.
+
+Tests: with a custom parent storage, a subagent's writes go through it at
+spawn, after a warm revive of a parked subagent, and after a cold revive from
+`createPersistedSubagentReviverFactory`; a cold revive whose storage lacks the
+file leaves the file unchanged.
 
 ### B2 Store child sessions (lane: compass-server)
 
@@ -460,15 +534,18 @@ Stacks on compass PR #2498 (RIG-5175), which also consumes
 Interfaces (`packages/compass-agent/src`):
 
 - `session-tee.ts`:
-  `TranscriptTeeBackend.mapSubagent(sessionFile: string, subagentID: string): void`.
-  Frames for an unmapped artifacts path wait until it is mapped.
+  `TranscriptTeeBackend.mapSubagent(sessionFile: string, subagentID: string, liveSeq: LiveSeq): void`.
+  Frames for an unmapped artifacts path wait until it is mapped. A mapped
+  frame takes `ended_live_seq` from that subagent's `LiveSeq`.
 - `subagent-log.ts`:
-  `attachSubagentLog(bus: EventBus, tee: TranscriptTeeBackend, notes: SessionLogNotes, sink: FrameSink, map: (event: AgentSessionEvent) => MapOutput[]): () => void`,
-  on the `subagentEventBus` that #2498 creates.
+  `attachSubagentLog(bus: EventBus, tee: TranscriptTeeBackend, notes: SessionLogNotes, sink: FrameSink, newMapper: (liveSeq: LiveSeq) => EventMapper): () => void`,
+  on the `subagentEventBus` that #2498 creates. It keeps one `LiveSeq` and
+  one mapper per subagent id, and calls `observe` before `map`.
 - `SessionLogNotes.subagent(n: SubagentNote): void`.
 
 Tests: a nested child routes by its mapped path; `__advisor.jsonl` is never
-routed.
+routed; after a warm and a cold revive, writes route by the new `started`
+event to the same child.
 
 ### B5 UI subagent rows (lane: compass-frontend)
 
@@ -483,10 +560,10 @@ Tests: both clicks open the same child log.
 - [ ] A1 Proto: history RPC, rows, live deltas.
 - [ ] A2 Store: page reader, backfill, append result.
 - [ ] A3 Server: row relay, `ListSessionLog`, subscribe backfill.
-- [ ] A4 Agent: live projector and custom-entry notes.
+- [ ] A4 Agent: `LiveSeq`, live deltas, custom-entry notes.
 - [ ] A5 UI: type-only import, entry fold, list then subscribe.
 - [ ] A6 Delete `SessionEvent`.
-- [ ] B1 OMP: subagent files use the parent's storage.
+- [ ] B1 OMP: subagent spawn and both revive paths use the parent's storage.
 - [ ] B2 Store: child sessions and lifetime epoch.
 - [ ] B3 Server: child routing.
 - [ ] B4 Agent: subagent capture.
