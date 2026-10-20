@@ -122,7 +122,7 @@ Sequence: T1 and T3 can start in parallel. T6's broker kind and controller metho
 
 ### T8 — OMP-fork controller and trusted workflows
 
-**Lane:** OMP-fork TypeScript controller. The Runner/Go layer owns launch and the broker socket. This task depends on T1 and T3.
+**Lane:** OMP-fork TypeScript controller. The Runner/Go layer owns launch and the broker socket. This task depends on T1, T3, and T6, and wires in T6's TOTP module.
 
 **Interfaces:** The Runner launches the controller per agent session as the browser UID on every enabled tier. The controller RPC is `BrowserOpen(url) -> {context_id, document_id}`, `BrowserGoto(context_id, url) -> document_id`, `BrowserClick(context_id, document_id, selector) -> status`, `BrowserObserve(context_id, document_id) -> summary|status`, `RunLogin(context_id, document_id, {username_grant, password_grant, totp_grant?}) -> status`, and `BrowserCaptureVendorCredentials(context_id, document_id, grant_id, workflow) -> status`. The controller owns Chromium, CDP, the profile, broker credential, context/document binding, and taint. Model tools call it over a session-scoped Unix socket. The broker socket is browser-UID-only. Taint starts when `RunLogin` or credential capture starts, before any redemption, whatever the outcome. Only reviewed trusted workflows may act after taint. The controller implements GitHub App manifest conversion and Linear OAuth app capture.
 
@@ -158,7 +158,7 @@ Sequence: T1 and T3 can start in parallel. T6's broker kind and controller metho
 
 **Interfaces:** `TotpSecretKind`; the controller-only method `GenerateAndFillTotp(context_id, document_id, grant_id, selector) -> status` redeems the seed, generates the code, and types it. The trusted prompt is `RequestPushApproval(agent_session_id, vendor, displayed_match_number?) -> {approved, selected_match_number?}`. The Server sends the human's answer to the controller over the browser-UID-only channel. Reject SMS, passkeys, and hardware keys without trusted input.
 
-**Test cycle:** Verify the TOTP seed and generated code stay out of model results and logs. Verify the human sees the GitHub number and the Server sends the yes/no answer only to the controller. Reject unsupported challenges without chat leakage.
+**Test cycle:** T6 ships `GenerateAndFillTotp` as a standalone controller module with unit tests; T8 wires it in. Verify the TOTP seed and generated code stay out of model results and logs. Against a controller stub, verify the human sees the GitHub number and the Server sends the yes/no answer only to the controller. Reject unsupported challenges without chat leakage.
 
 ### T7 — Cross-tier browser security and workflow tests
 
