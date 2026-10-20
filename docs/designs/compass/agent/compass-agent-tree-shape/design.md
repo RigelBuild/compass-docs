@@ -247,8 +247,9 @@ thresholds are prompt guidance; Q3 (c) would move them into a server check.
 - Add the dispatch rule (Q4) to `config/prompts/{supervisor,owner,manager}/SYSTEM.md` and the
   "Scope the subagent" section of `config/skills/management-trees/SKILL.md`: dispatch every
   independent slice at once, and on resume re-dispatch any slice the board shows unfinished.
-- Add `config/settings/config.yml` with nested `task:` / `maxConcurrency: 10`. Ship it outside an
-  active wave, because the bundle change reloads every agent.
+- After Q4 is ruled, add `config/settings/config.yml` with nested `task:` / `maxConcurrency:` set to
+  the ruled cap (10 if Q4 takes the recommendation). Ship it outside an active wave, because the
+  bundle change reloads every agent. The prompt rule and the idle-flush call ship now.
 - In compass-agent's `#trackTurn` (`packages/compass-agent/src/agent.ts`), call
   `session.yieldQueue.requestIdleFlush()` on every `agent_end`, terminal or not.
 - **Interfaces:** consumes the bundle `settingsMember` and the SDK's public
@@ -307,8 +308,9 @@ thresholds are prompt guidance; Q3 (c) would move them into a server check.
 - The notice states which branch drainLost took: "re-waking" when it wakes or defers a wake, and
   "down, not re-woken" when an errored child owes no work. The second case is the one the parent
   must act on.
-- Rate-limit to one notice per child per `erroredWakeResetAfter` window, keyed per child for both
-  loss kinds, so a crash loop does not wake the parent on every cycle.
+- Rate-limit "re-waking" notices to one per child per `erroredWakeResetAfter` window, so a crash
+  loop does not wake the parent on every cycle. A "down" notice is never rate-limited: it is the
+  last loss before the child stops, so it fires at most once per stop.
 - **Interfaces:** consumes `OnSessionLost(sessionID, account, errored)`. The `Consumer`
   (`go/internal/delivery/consumer.go`) holds no poster and no parent lookup today, so T5 adds:
   - a `DeliveryReads` method returning an account's `parent_agent_id` and the parent's
@@ -317,15 +319,17 @@ thresholds are prompt guidance; Q3 (c) would move them into a server check.
     at server assembly in `go/server/sinks.go` with the existing setter pattern, which avoids the
     delivery↔server construction cycle.
 
-  It produces at most one message per child per window on the parent's home channel.
-- **Test:** a delivery pgtest covers four cases: a parented child lost twice inside one window
+  It produces at most one "re-waking" message per child per window, plus one "down" message per
+  stop, on the parent's home channel.
+- **Test:** a delivery pgtest covers five cases: a parented child lost twice inside one window
   gives one notice on the parent's home channel, none on the DM, and no extra child wake; an errored
-  child with no owed work gives the "down" notice; a container loss gives the "re-waking" notice; a
-  root agent's loss gives none.
+  child with no owed work gives the "down" notice; a "re-waking" notice followed in the same window
+  by an errored loss with nothing owed still gives the "down" notice; a container loss gives the
+  "re-waking" notice; a root agent's loss gives none.
 
 ## Tasks
 
-- [ ] T1 — Parallel dispatch rule, the concurrency cap of 10, and the idle-flush call
+- [ ] T1 — Parallel dispatch rule and the idle-flush call now; the concurrency cap after Q4
 - [ ] T2 — `cto` role and prompt (after Q1, Q2)
 - [ ] T3 — Tree-shape guidance and concepts doc (after Q5)
 - [ ] T4 — Spawn-proposal template (after Q3)
