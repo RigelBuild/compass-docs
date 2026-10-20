@@ -36,9 +36,9 @@ Compass asks are not permission prompts (`proto/compass/v1/comms.proto`, `Ask`: 
 
 For broker-value writes, the owning user may set or delete USER refs. Only a tenant admin may set or delete TENANT refs. The Server derives the coordinate; clients cannot provide an owner id or tenant id.
 
-A request has an exact ref, purpose, requested TTL, and typed uses. V1 supports only `browser_fill`; its binding contains proposed exact origins. Each origin is a normalized scheme/host/port tuple with no path or wildcard. An approver may narrow, but not expand, the requested use or origin set. The approver chooses mode and expiry. Mode defaults to once. Grant expiry cannot exceed the lesser of requested TTL and the mode cap: 15 minutes for once, 8 hours for session, and 7 days for standing. If requested TTL is omitted, use 15 minutes. Validate expiry against server time. USER requests go to the owning user. TENANT requests go to a tenant admin, even when the agent has an owner. Persist before approval polling can observe the request. `ListSecretRequests` returns only requests the caller may approve.
+A request has an exact ref, purpose, requested TTL, and typed uses. V1 supports only `browser_fill`; its binding contains proposed HTTPS origins only, normalized to scheme, ASCII/punycode host, and port with no path or wildcard. Reject opaque origins. Validate origins at request creation, approval, and redemption. An approver may narrow, but not expand, the requested use or origin set. The approver chooses mode and expiry. Mode defaults to once. Grant expiry cannot exceed the lesser of requested TTL and the mode cap: 15 minutes for once, 8 hours for session, and 7 days for standing. If requested TTL is omitted, use 15 minutes. Validate expiry against server time. USER requests go to the owning user; at review, require approver, stored request owner, current agent owner, and USER `scope_id` to be identical. TENANT requests go to a tenant admin, even when the agent has an owner. Refuse creation if the active binding has an empty version. Persist before approval polling can observe the request. `ListSecretRequests` returns only requests the caller may approve.
 
-A grant is `Grant{grant_id, ref, agent_account_id, approver_user_id, purpose, mode, expires_at, uses[]}`. The grant id identifies a grant but does not authorize by possession alone; each use is checked against the authenticated identity and live binding. Once allows one successful redemption. Session and standing allow redemption until expiry or revocation. Failed backend reads are audited and leave once grants available. Session grants bind to `(session_id, binding_version)`. Every redemption resolves the live durable binding and requires its `binding_version` to equal the grant; `releaseSession` is eager cleanup, not the authority check. USER grants require the approver to remain the agent owner; TENANT grants require the approver to remain a tenant admin. Revoke grants when an agent is deleted, its owner changes, or an approver loses authority. A logical session id can persist across authorized resume (`docs/designs/compass/agent/runner-session-id-allocation/design.md`: “A resume reuses the already-authorized logical `resume_session_id`”), so it is not sufficient by itself. Standing grants are agent-bound and require origin-bound uses.
+A grant is `Grant{grant_id, ref, agent_account_id, approver_user_id, purpose, mode, expires_at, uses[]}`. The grant id identifies a grant but does not authorize by possession alone; each use is checked against the authenticated identity and live binding. Every redemption requires a live binding for the requesting agent. Only session grants also require its `binding_version` to match the grant. Once allows one successful redemption. Session and standing allow redemption until expiry or revocation. Failed backend reads are audited and leave once grants available. Session grants bind to `(session_id, binding_version)`; `releaseSession` is eager cleanup, not the authority check. USER grants require `scope_id`, approver, and current agent owner to remain identical; TENANT grants require the approver to remain a tenant admin. On agent deletion revoke grants; on owner change cancel pending requests and revoke grants; on approver authority loss revoke grants, including TENANT admin demotion. A logical session id can persist across authorized resume (`docs/designs/compass/agent/runner-session-id-allocation/design.md`: “A resume reuses the already-authorized logical `resume_session_id`”), so it is not sufficient by itself. Standing grants are agent-bound and require origin-bound uses.
 
 An agent calls `GetSecretRequest(request_id)` to poll its own request until it is approved, denied, cancelled, or revoked. The Server resolves the agent from the active binding and returns state, grant id, and expiry only; it never returns a value. Use bounded backoff. The agent may cancel its own pending request; only an authorized user may deny it with `ReviewSecretRequest`. A conditional state transition allows only one decision. Approval returns a grant id that identifies, but does not authorize by possession alone; every use checks the authenticated identity and live binding.
 
@@ -58,7 +58,7 @@ OpenBao's public documentation says “Policies are deny by default” (`https:/
 - **Per-tenant Postgres:** rejected because separate databases multiply operations without changing the v1 authorization model.
 - **A9 storage:** rejected. A separate table follows the `server_secrets` precedent in `go/internal/store/migrations/0001_init.sql`, where separation is enforced “by construction rather than by a filter someone can forget.” Broker values cannot shadow or materialize with A9 values.
 - **ACL before approval:** deferred. Per-request approval gives one clear authority decision; ACL adds policy administration without removing that gate.
-- **Ask or separate event stream:** rejected. Asks are not permission prompts; a separate stream adds replay state. A generic cue plus persisted-list refetch is sufficient.
+- **Ask or event cue:** rejected. Asks are not permission prompts, and the global event bus has no per-caller filter. Poll the caller-authorized request list while Settings is open; this needs no event replay or filtering mechanism.
 - **Model-readable redemption or shared browser:** rejected because model-written code could read the credential or the filled field.
 - **Agent-scoped requests:** rejected because v1 has no agent-scope value-entry contract or consumer.
 
@@ -77,8 +77,8 @@ Values MUST NOT appear in logs, audit, events, UI, errors, model-visible output,
 - Keep DL-350 Active. Preserve the A9 table, key, AAD, precedence, FILE/ENV delivery, and boot/server-secret separation (DL-350, DL-351, DL-355, DL-356, DL-362).
 - Broker values live only in `broker_secrets`; they never shadow A9, enter `FetchSecrets`, or materialize into containers.
 - Use forced tenant RLS on every new table. Account/agent-account FK hardening is out of scope; the separate `secrets` tenant-key fix is tracked as RIG-6070.
-- V1 has no ACL, OpenBao adapter, dynamic-secret interface, tombstone, backend job, or external-backend retry protocol. Grant revocation is explicit and on agent deletion or approver authority loss; redemption also rechecks authority.
-- Once grants default to 15 minutes and cannot exceed 15 minutes. Session grants bind to one `(session_id, binding_version)` and require a live durable binding at every redemption; `Hub.releaseSession` and runner binding reaping are eager revocation only. Session grants cannot exceed 8 hours. Standing grants cannot exceed 7 days and require origin-bound uses. All expiries also respect requested TTL.
+- V1 has no ACL, OpenBao adapter, dynamic-secret interface, tombstone, backend job, or external-backend retry protocol. On owner change, cancel pending requests and revoke grants; on agent deletion revoke grants; on approver authority loss revoke grants, including TENANT admin demotion.
+- Every redemption requires a live binding for the requesting agent; only session grants also require its `binding_version` to match the grant. `Hub.releaseSession` and runner binding reaping eagerly revoke matching session grants but are not authorization checks. Once grants default to 15 minutes, session grants cannot exceed 8 hours, and standing grants cannot exceed 7 days and require origin-bound uses. All expiries also respect requested TTL.
 - Only trusted Runner host tool code outside the agent container may read values. Do not enable browser fill until the RIG-6007 isolation precondition holds.
 
 ### T1 — Broker store and migration
@@ -123,7 +123,7 @@ CREATE TABLE broker_secrets (
 );
 CREATE TABLE secret_requests (
   tenant_id TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE), request_id TEXT NOT NULL, agent_account_id TEXT NOT NULL,
-  owner_user_id TEXT NOT NULL, session_id TEXT NOT NULL, binding_version TEXT NOT NULL,
+  owner_user_id TEXT NOT NULL, session_id TEXT NOT NULL, binding_version TEXT NOT NULL CHECK (binding_version <> ''),
   scope_kind SMALLINT NOT NULL CHECK (scope_kind IN (0,1)), scope_id TEXT NOT NULL,
   name TEXT NOT NULL, purpose TEXT NOT NULL,
   requested_ttl_seconds BIGINT NOT NULL CHECK (requested_ttl_seconds > 0),
@@ -144,7 +144,7 @@ CREATE TABLE secret_grants (
   approver_user_id TEXT NOT NULL, agent_account_id TEXT NOT NULL, scope_kind SMALLINT NOT NULL CHECK (scope_kind IN (0,1)),
   scope_id TEXT NOT NULL, name TEXT NOT NULL, purpose TEXT NOT NULL,
   mode TEXT NOT NULL CHECK (mode IN ('once','session','standing')),
-  session_id TEXT, binding_version TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  session_id TEXT, binding_version TEXT CHECK (binding_version <> ''), created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   expires_at TIMESTAMPTZ NOT NULL, consumed_at TIMESTAMPTZ, revoked_at TIMESTAMPTZ,
   PRIMARY KEY (tenant_id, grant_id), UNIQUE (tenant_id, request_id),
   UNIQUE (tenant_id, grant_id, agent_account_id, scope_kind, scope_id, name),
@@ -168,7 +168,7 @@ CREATE TABLE secret_audit (
 );
 ```
 
-Requests may exist before values. Deleting a broker value or revoking a grant sets its request state to `revoked`, retains request and audit history, and blocks future use. Revoke grants when an agent is deleted, its owner changes, or an approver loses authority; TENANT approver demotion revokes grants approved by that user. Store the approving user id on each grant so current authority can be checked at redemption. The backend derives AAD from tenant, scope, name, and key version.
+Requests may exist before values. Deleting a broker value or revoking a grant sets its request state to `revoked`, retains request and audit history, and blocks future use. Revoke grants when an agent is deleted or an approver loses authority; on owner change, cancel pending requests and revoke grants. TENANT approver demotion revokes grants approved by that user. Store the approving user id on each grant so current authority can be checked at redemption. The backend derives AAD from tenant, scope, name, and key version.
 
 The migration uses this exact grant and RLS pattern for each new table, as in `0004_forge_write_intents.sql`:
 
@@ -187,8 +187,7 @@ Repeat those statements for `secret_requests`, `secret_request_uses`, `secret_gr
 
 ### T2 — Request, approval, and grant API
 
-Add broker-value set/delete and user-authenticated request list/review and grant revocation APIs to `SecretsService`. Only the current USER owner or a tenant admin for TENANT grants may call `RevokeSecretGrant`. Add request creation, status, and agent cancellation operations to one AgentGateway `Secret` call family, relayed by one RunnerService RPC. Resolve agent, owner, tenant, session, and binding version from the active RunnerHub binding. USER requests can be approved by the owner; TENANT requests require a tenant admin. Approval and grant creation are one transaction. User-facing request APIs carry no caller-supplied actor or tenant. Use the existing `SecretScope` enum and append new RPCs and messages; do not change A9 messages.
-
+Add broker-value set/delete and user-authenticated request list/review and grant revocation APIs to `SecretsService`. Only the current USER owner or a tenant admin for TENANT grants may call `RevokeSecretGrant`. At review of a USER request, require the authenticated approver, stored request owner, current agent owner, and USER ref scope id to be identical. On owner change, cancel pending requests and revoke grants; on agent deletion revoke grants; on approver authority loss revoke grants, including TENANT admin demotion. Reject empty binding versions at request creation. Add request creation, status, and agent cancellation operations to one AgentGateway `Secret` call family, relayed by one RunnerService RPC. Approval and grant creation are one transaction. User APIs derive caller and tenant from authentication. Use the existing `SecretScope` enum and append new RPCs and messages; do not change A9 messages.
 `Interfaces:`
 
 ```proto
@@ -196,6 +195,7 @@ rpc SetBrokerSecret(SetBrokerSecretRequest) returns (SetBrokerSecretResponse);
 rpc DeleteBrokerSecret(DeleteBrokerSecretRequest) returns (DeleteBrokerSecretResponse);
 rpc ListSecretRequests(ListSecretRequestsRequest) returns (ListSecretRequestsResponse);
 rpc ReviewSecretRequest(ReviewSecretRequestRequest) returns (ReviewSecretRequestResponse);
+rpc RevokeSecretGrant(RevokeSecretGrantRequest) returns (RevokeSecretGrantResponse);
 
 message SecretRef { SecretScope scope = 1; string name = 2; }
 message SecretUse { string use_id = 1; SecretUseKind kind = 2; SecretUseBinding binding = 3; }
@@ -244,6 +244,8 @@ message SecretCallResult {
 message SecretCallError { string code = 1; string message = 2; } // e.g. permission_denied, grant_expired, origin_mismatch, revoked.
 message SecretRequestCallResponse { string request_id = 1; }
 message GetSecretRequestCallResponse { string state = 1; string grant_id = 2; int64 expires_at_unix_ms = 3; }
+message CancelSecretRequestCallResponse { bool cancelled = 1; }
+message FillSecretCallResponse { bool filled = 1; }
 message RelaySecretCallRequest {
   string session_id = 1;
   SecretCallRequest call = 2;
@@ -274,13 +276,13 @@ type Redeemer interface {
 func (h *Hub) RelaySecretCall(ctx context.Context, runnerID string, req *compassv1internal.RelaySecretCallRequest) (*compassv1internal.RelaySecretCallResponse, error)
 ```
 
-The Server normalizes the host-supplied origin and checks exact equality against the approved use. It resolves `session_id = 1` through authenticated Runner state and requires the live durable binding version to equal the grant's binding version. It also checks that the approver still has authority. `Hub.releaseSession` and binding reaping revoke matching grants eagerly, but every redemption independently requires a live binding; session id alone is insufficient.
+The Server normalizes the host-supplied HTTPS origin, rejects opaque or non-HTTPS origins, and checks exact equality against the approved use. Request creation and approval apply the same origin validation; the approval panel shows ASCII/punycode hosts. The Server resolves `session_id = 1` through authenticated Runner state and requires a live durable binding for the requesting agent on every redemption. Only session grants additionally require the live binding version to equal the grant's version. It checks that USER ref scope id and approver still match the agent owner, or that the TENANT approver remains an admin. `Hub.releaseSession` and binding reaping revoke matching grants eagerly, but every redemption independently requires a live binding.
 
 For once grants, hold the grant row lock through the backend read. On success, mark consumed and write the audit row in one transaction before returning bytes to trusted Runner host code; if commit fails, return no bytes. On backend read failure, audit and commit without consuming. Audit every redemption with ids, use kind, canonical binding, outcome, and time; never record the value.
 
 ### T4 — Approval panel and polling
 
-Add a private Settings panel. Show requester, purpose, exact ref, proposed uses/origins, TTL, and grant mode; never show values. While open, poll `ListSecretRequests` and render the complete caller-authorized request snapshot, including state, grant id, and expiry. Do not publish an approval cue on the global `SubscribeEvents` bus.
+Add a private Settings panel. Show requester, purpose, exact ref, proposed uses/origins as ASCII/punycode hosts, TTL, and grant mode; never show values. While open, poll `ListSecretRequests` and render the complete caller-authorized request snapshot, including state, grant id, and expiry. Do not publish an approval cue on the global `SubscribeEvents` bus.
 
 ### T5 — RIG-6007 browser consumer
 
@@ -290,9 +292,8 @@ Before enabling fill, RIG-6007 must keep the filled browser outside agent code-e
 
 - [ ] T1 — Add `0005_secret_broker.sql`, tenant-RLS broker tables, and encrypted Postgres `SecretBackend`. Test tenant isolation, AAD binding, encrypted storage, and independence from A9 resolution and materialization.
 - [ ] T2 — Add broker-value set/delete, request creation, list, review, agent cancellation/status, and approver grant revocation APIs plus the single `Secret` call family and relay. Test auth-derived identity, AGENT-ref rejection, ownership, decision races, use-subset validation, expiry caps, authority loss, and revocation.
-- [ ] T3 — Build the trusted Runner host tool path, origin-bound redemption, once-read locking, audit, live binding-version/authority checks, and error-only agent results. Test foreign Runner, stale binding, wrong grant, origin mismatch, read-failure retry, redaction, and absence of model-visible values.
-- [ ] T4 — Add the private Settings approval panel and polling of the caller-authorized request snapshot.
-- [ ] T5 — Implement and test the RIG-6007 browser-isolation, credential-field, frame-origin, screenshot/accessibility-redaction, and navigation-race preconditions before enabling fill.
+- [ ] T3 — Build the trusted Runner host tool path, origin-bound redemption, once-read locking, audit, live-agent-binding checks and session-only binding-version checks, and error-only agent results. Test foreign Runner, missing binding, stale session binding, wrong grant, origin mismatch, read-failure retry, redaction, and absence of model-visible values.
+- [ ] T4 — Add the private Settings approval panel and polling of the caller-authorized request snapshot. Test that a USER owner sees only their own requests; a tenant admin sees only approvable requests in their tenant; and no caller sees another tenant's requests.
 
 ## Ledger delta
 
