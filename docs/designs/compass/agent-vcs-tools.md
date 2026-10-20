@@ -633,16 +633,16 @@ nothing; an apply over either cap refuses.
 
 ## Tasks
 
-- [ ] T1 — provider update and lookup
-- [ ] T2 — stack block
-- [ ] T3 — proto
-- [ ] T4 — store: write intents and case-folded lookup
+- [x] T1 — provider update and lookup
+- [x] T2 — stack block
+- [x] T3 — proto
+- [x] T4 — store: write intents and case-folded lookup
 - [ ] T5 — Server arms and write intents
-- [ ] T6 — jj runner and local tools
+- [x] T6 — jj runner and local tools
 - [ ] T7 — submit, retire, PR status, and wiring
 - [ ] T8 — prompt, skill, cutover, and DL-558
 - [ ] T9 — remove jj-vine and narrow the token
-- [ ] T10 — Server mirror and push
+- [x] T10 — Server mirror and push
 
 ## Future direction
 
