@@ -646,6 +646,8 @@ nothing; an apply over either cap refuses.
 
 Errata (as shipped):
 
+- T3: the `client_request_id` comment on main still reads `14-19`;
+  compass#2478 changes it to `14-20`.
 - T4: `forge_write_intents` lives in its own migration,
   `go/internal/store/migrations/0004_forge_write_intents.sql`, not in
   `0001_init.sql`.
