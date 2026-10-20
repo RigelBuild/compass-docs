@@ -59,6 +59,8 @@ runs no type check.
 
 ### Chosen approach
 
+Decision: DL-638.
+
 **Fix each project behind a leaf flag, then move the flag into the base.** Each
 fix slice adds `"noUncheckedIndexedAccess": true` to its project's
 `tsconfig.json` and fixes that project's errors in the same PR. The slice is
