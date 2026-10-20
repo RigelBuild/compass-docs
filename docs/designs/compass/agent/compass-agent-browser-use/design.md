@@ -42,9 +42,9 @@ Use a restricted OMP fork. Disable the full Eval browser prelude. Set `browser.e
 
 The Runner launches the controller per agent session as the browser UID on every enabled tier. The controller is the restricted OMP-fork TypeScript runtime. Runner/Go owns its launch and the browser-UID-only broker socket. The controller owns Chromium, the private CDP pipe, profile, broker credential, context/document bindings, and taint state. Model tools call it over a session-scoped Unix RPC socket. The controller enforces bounded actions and never exposes its broker credential or CDP pipe to the model UID.
 
-`browser_login(context_id, document_id, {username_grant, password_grant, totp_grant?}) -> status` invokes the controller's trusted `RunLogin` workflow. The controller verifies the grant origin and credential fields, fills username/password, submits the login form, handles TOTP if requested, then taints the whole agent session. The controller returns status only. It does not expose secret values to model tools.
+`browser_login(context_id, document_id, {username_grant, password_grant, totp_grant?}) -> status` invokes the controller's trusted `RunLogin` workflow. The controller taints the whole agent session first, before it redeems any grant. It then verifies the grant origin and credential fields, fills username and password, submits the login form, and handles TOTP if requested. The controller returns status only. It does not expose secret values to model tools.
 
-The controller taints the whole agent session after login or generated-credential capture. Taint lasts until teardown; navigation and new contexts do not clear it. After taint, the controller refuses model-initiated navigation, clicks, and fills. Only reviewed trusted workflows may act.
+Taint starts when `RunLogin` or generated-credential capture starts, whatever the outcome. A failed login, a CAPTCHA, or a changed form does not undo it. Taint lasts until teardown; navigation and new contexts do not clear it. After taint, the controller refuses model-initiated navigation, clicks, and fills. Only reviewed trusted workflows may act.
 
 The controller fills only credential fields on a document whose origin matches the grant. By default, the target must be `input[type=password]` or have an allowed credential `autocomplete` value: `current-password`, `one-time-code`, or `username` for the username slot. Vendor workflows may instead use a selector fixed by the grant. The model cannot choose arbitrary non-credential targets.
 
@@ -102,7 +102,7 @@ OMP's full Eval allows readback, and text redaction misses page data and images.
 
 ## Plan
 
-Sequence: T1 and T3 can start in parallel. T8 depends on T1 and T3 and owns login and vendor workflows. T2 depends on T8. T4 gates tier enablement. T5 and T6 follow broker/runtime support. T7 tests the integrated system.
+Sequence: T1 and T3 can start in parallel. T6's broker kind and controller method follow T1. T8 depends on T1, T3, and T6 and owns login and vendor workflows. T2 depends on T8. T4 gates tier enablement. T5 follows broker support. T7 tests the integrated system.
 
 ### T1 — Brokered browser fill and generated-secret capture
 
@@ -124,9 +124,9 @@ Sequence: T1 and T3 can start in parallel. T8 depends on T1 and T3 and owns logi
 
 **Lane:** OMP-fork TypeScript controller. The Runner/Go layer owns launch and the broker socket. This task depends on T1 and T3.
 
-**Interfaces:** The Runner launches the controller per agent session as the browser UID on every enabled tier. The controller RPC is `BrowserOpen(url) -> {context_id, document_id}`, `BrowserGoto(context_id, url) -> document_id`, `BrowserClick(context_id, document_id, selector) -> status`, `BrowserObserve(context_id, document_id) -> summary|status`, `RunLogin(context_id, document_id, {username_grant, password_grant, totp_grant?}) -> status`, and `BrowserCaptureVendorCredentials(context_id, document_id, grant_id, workflow) -> status`. The controller owns Chromium, CDP, the profile, broker credential, context/document binding, and taint. Model tools call it over a session-scoped Unix socket. The broker socket is browser-UID-only. Taint follows successful login or credential capture. Only reviewed trusted workflows may act after taint. The controller implements GitHub App manifest conversion and Linear OAuth app capture.
+**Interfaces:** The Runner launches the controller per agent session as the browser UID on every enabled tier. The controller RPC is `BrowserOpen(url) -> {context_id, document_id}`, `BrowserGoto(context_id, url) -> document_id`, `BrowserClick(context_id, document_id, selector) -> status`, `BrowserObserve(context_id, document_id) -> summary|status`, `RunLogin(context_id, document_id, {username_grant, password_grant, totp_grant?}) -> status`, and `BrowserCaptureVendorCredentials(context_id, document_id, grant_id, workflow) -> status`. The controller owns Chromium, CDP, the profile, broker credential, context/document binding, and taint. Model tools call it over a session-scoped Unix socket. The broker socket is browser-UID-only. Taint starts when `RunLogin` or credential capture starts, before any redemption, whatever the outcome. Only reviewed trusted workflows may act after taint. The controller implements GitHub App manifest conversion and Linear OAuth app capture.
 
-**Test cycle:** Verify the model UID cannot access the broker socket, credential, profile, or CDP pipe, or redeem through `/run/compass/agent.sock` or another path. Test multi-field username/password login, submit, optional TOTP, then session taint. Reject non-credential fill targets. After taint, refuse model-initiated clicks and navigation; confirm trusted workflows return status only.
+**Test cycle:** Verify the model UID cannot access the broker socket, credential, profile, or CDP pipe, or redeem through `/run/compass/agent.sock` or another path. Test multi-field username/password login, submit, optional TOTP, and session taint. Verify a failed login also leaves the session tainted, so later observe calls return status only. Reject non-credential fill targets. After taint, refuse model-initiated clicks and navigation; confirm trusted workflows return status only.
 
 ### T2 — Compass browser tool proxy
 
@@ -154,7 +154,7 @@ Sequence: T1 and T3 can start in parallel. T8 depends on T1 and T3 and owns logi
 
 ### T6 — TOTP and supported human handoff
 
-**Lane:** compass Go runner (controller) and compass server; depends on T1 and T2.
+**Lane:** OMP-fork TypeScript controller and compass server; depends on T1. T8 consumes `GenerateAndFillTotp`.
 
 **Interfaces:** `TotpSecretKind`; the controller-only method `GenerateAndFillTotp(context_id, document_id, grant_id, selector) -> status` redeems the seed, generates the code, and types it. The trusted prompt is `RequestPushApproval(agent_session_id, vendor, displayed_match_number?) -> {approved, selected_match_number?}`. The Server sends the human's answer to the controller over the browser-UID-only channel. Reject SMS, passkeys, and hardware keys without trusted input.
 
