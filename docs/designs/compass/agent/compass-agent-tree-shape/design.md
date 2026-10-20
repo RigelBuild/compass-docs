@@ -8,8 +8,9 @@ Design only; no code ships with this record.
 
 ## Open Questions
 
-Each question has options and a recommendation. Q1 and Q2 are load-bearing: T2 and T3 build the
-CTO role from them. Q3 to Q5 change values the tasks set, so they are load-bearing too.
+Each question has options and a recommendation; Matt's decisions are tracked in RIG-6069. Q1 and Q2
+are load-bearing: T2 and T3 build the CTO role from them. Q3 to Q5 change values the tasks set, so
+they are load-bearing too.
 
 ### Q1. After direct event delivery lands, do the coordinator and CTO stay separate?
 
@@ -126,7 +127,10 @@ So the Manager loop the prompt describes works without polling
 in-flight bookkeeping, so `yieldQueue.requestIdleFlush()` never runs when they end. A result that is
 enqueued after the loop's last aside poll, but before `agent_end` clears streaming, waits until the
 next message arrives. With ten workers, the last completion can strand this way. T1 fixes it:
-compass-agent calls `session.yieldQueue.requestIdleFlush()` on each terminal `agent_end`.
+compass-agent calls `session.yieldQueue.requestIdleFlush()` on every `agent_end`. The SDK marks
+the stranding `agent_end` non-terminal (`willContinue: true` while an async result is queued), so
+the call cannot wait for a terminal one. It is safe to call every time: it schedules only when
+entries are queued, and the run returns while the session is streaming.
 
 **Workers die with the Manager process.** A config-version change makes the runner reload the agent
 (`agentHost.refreshOneContainer` → `reloadLocked` → `stream.Stop` in `go/internal/runner/host.go`).
@@ -139,9 +143,10 @@ outside an active wave.
 A **standing child Manager** is different. `agents_spawn_peer` returns once the server has
 provisioned and started the child (`lifecycleService.SpawnAsAccount` in `go/server/lifecycle.go`).
 Its later work reaches the parent only as an explicit DM report. When the child's session is lost,
-the server already re-wakes the child itself: `Consumer.OnSessionLost` queues it, and
-`Consumer.drainLost` wakes it with a capped backoff after an errored exit
-(`go/internal/delivery/settle.go`). The parent is not told. T5 adds that notice.
+`Consumer.OnSessionLost` queues it and `Consumer.drainLost` (`go/internal/delivery/settle.go`)
+decides. A container or Runner-unknown loss wakes the child at once. An errored loss wakes it with a
+capped backoff, but only when it owes work; otherwise drainLost logs "errored session owes nothing,
+not waking" and the child stays down. The parent is not told in any case. T5 adds that notice.
 
 ### Parallel dispatch
 
@@ -245,7 +250,7 @@ thresholds are prompt guidance; Q3 (c) would move them into a server check.
 - Add `config/settings/config.yml` with nested `task:` / `maxConcurrency: 10`. Ship it outside an
   active wave, because the bundle change reloads every agent.
 - In compass-agent's `#trackTurn` (`packages/compass-agent/src/agent.ts`), call
-  `session.yieldQueue.requestIdleFlush()` on each terminal `agent_end`.
+  `session.yieldQueue.requestIdleFlush()` on every `agent_end`, terminal or not.
 - **Interfaces:** consumes the bundle `settingsMember` and the SDK's public
   `YieldQueue.requestIdleFlush()`; produces no API.
 - **Test:** a passthrough test asserts `settings.get("task.maxConcurrency") === 10`, as
@@ -262,7 +267,11 @@ thresholds are prompt guidance; Q3 (c) would move them into a server check.
     them;
   - the `ta.role IN ('supervisor', 'owner', 'manager')` filters in
     `go/internal/store/queries/agent_config.sql`, then regenerate `go/internal/store/db`;
-  - the `CreateAgentRequest.role` and `SpawnPeerRequest.role` proto comments.
+  - the CLI help and both errors in `validateAgentSpawnRole` (`go/cmd/compass/agent_spawn.go`);
+  - the role comments on `CreateAgentRequest` (`comms.proto`) and
+    `ProvisionAgentWorkspaceRequest` (`compass.proto`), then regenerate;
+  - "The three-role taxonomy" in the three role prompts and "a closed set of three" in
+    `management-trees`.
 - Add `config/prompts/cto/SYSTEM.md`: no lane, no routed work, owns direction, priorities, design
   intake and the final review pass; reports to the operator on its home channel.
 - The root `supervisor` spawns the `cto` with `agents_spawn_peer` after operator approval, like any
@@ -295,13 +304,24 @@ thresholds are prompt guidance; Q3 (c) would move them into a server check.
   does (`go/server/serve_seed.go`). It is not the parent/child DM: the child is a mandatory member of
   that DM, and a system post there would wake the lost child at once and skip the errored-wake
   backoff.
-- Rate-limit to one notice per child per backoff window, so a crash loop does not wake the parent on
-  every cycle. The notice says the server is already re-waking the child.
-- **Interfaces:** consumes `OnSessionLost(sessionID, account, errored)` and the account's
-  `parent_agent_id`; produces at most one message per child per window on the parent's home channel.
-- **Test:** a delivery pgtest loses a parented child twice inside one window and asserts one notice
-  on the parent's home channel, none on the DM, and no extra wake of the child; a root agent's loss
-  produces none.
+- The notice states which branch drainLost took: "re-waking" when it wakes or defers a wake, and
+  "down, not re-woken" when an errored child owes no work. The second case is the one the parent
+  must act on.
+- Rate-limit to one notice per child per `erroredWakeResetAfter` window, keyed per child for both
+  loss kinds, so a crash loop does not wake the parent on every cycle.
+- **Interfaces:** consumes `OnSessionLost(sessionID, account, errored)`. The `Consumer`
+  (`go/internal/delivery/consumer.go`) holds no poster and no parent lookup today, so T5 adds:
+  - a `DeliveryReads` method returning an account's `parent_agent_id` and the parent's
+    `HomeChannelID`;
+  - a narrow `LostChildNotifier` interface (post as `@compass` to one channel), set on the Consumer
+    at server assembly in `go/server/sinks.go` with the existing setter pattern, which avoids the
+    delivery↔server construction cycle.
+
+  It produces at most one message per child per window on the parent's home channel.
+- **Test:** a delivery pgtest covers four cases: a parented child lost twice inside one window
+  gives one notice on the parent's home channel, none on the DM, and no extra child wake; an errored
+  child with no owed work gives the "down" notice; a container loss gives the "re-waking" notice; a
+  root agent's loss gives none.
 
 ## Tasks
 
@@ -313,10 +333,16 @@ thresholds are prompt guidance; Q3 (c) would move them into a server check.
 
 ## Ledger delta
 
+DL-644 and DL-645 record only what Matt ruled on 2026-10-19. The `cto` label, the cap of 10 as a
+setting, the tree shape and the approval path wait on Q1 to Q5 (RIG-6069) and get their own
+decision files when ruled. DL-643 and DL-646 carry `design` as the ratifier until Matt approves this
+record.
+
 - **DL-643:** a worker's completion reaches its Manager as a pushed async-result follow-up;
   compass-agent requests an idle flush after each turn it drives so no result strands.
-- **DL-644:** Managers dispatch every independent slice at once; the fleet settings cap concurrent
-  subagents at 10 and the runtime queues the rest.
-- **DL-645:** coordination splits into a `supervisor` coordinator and a separate `cto`.
+- **DL-644:** Managers dispatch independent slices in parallel, about 10 at a time, each worker in
+  its own jj workspace.
+- **DL-645:** coordination splits into a root coordinator and a separate CTO agent with no routed
+  work (option B).
 - **DL-646:** a standing child's session loss posts one rate-limited system-sender notice on its
   parent's home channel.
