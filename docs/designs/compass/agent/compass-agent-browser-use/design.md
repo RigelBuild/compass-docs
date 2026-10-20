@@ -41,10 +41,11 @@ This proposal uses the Open Questions recommendations. Matt must rule on them be
 Use a restricted OMP fork. Disable the full Eval browser prelude. Set `browser.enabled: false` in code after fleet settings. This unconditional override must survive missing or malformed settings.
 
 The Runner launches the browser controller for each agent session as the browser UID on every enabled tier. The controller owns Chromium, the private CDP pipe, the per-session profile, broker credential, context/document bindings, and taint state. The model tools call the controller over a session-scoped Unix RPC socket. The controller allows bounded browser operations and enforces taint and ID bindings itself. It never exposes its broker credential or CDP pipe to the model UID.
+The controller restricts secret fill to credential fields on a document whose origin matches the grant. By default, the target must be `input[type=password]` or have an allowed credential `autocomplete` value: `current-password`, `one-time-code`, or `username` for a username slot. Vendor workflows may instead use a selector fixed by the grant. The model cannot choose arbitrary non-credential targets.
 
-`browser_fill_secret(context_id, document_id, grant_id, selector)` makes the controller read the main-frame origin from CDP. The controller reports that origin to the broker, which checks the grant allowlist. Origin integrity depends on the isolated runtime. Before typing, the controller rechecks the target, frame, document, and origin. It discards the value if any of them changed. The IDs bind to a controller-owned target, frame, and loader generation.
+Before fill, the controller reads the main-frame origin from CDP and reports it to the broker. The broker checks the grant allowlist. Origin integrity depends on the isolated controller. Before typing, the controller rechecks the target, frame, document, and origin, and discards the value if any changed. IDs bind to a controller-owned target, frame, and loader generation.
 
-The controller taints the whole agent session before the first secret fill or credential capture. Taint lasts through teardown. Navigation and new contexts do not clear it. After taint, every model-UID caller gets status only. Trusted workflows handle post-login steps.
+The controller taints the whole agent session before the first secret fill or credential capture. Taint lasts until teardown; navigation and new contexts do not clear it. After taint, the controller refuses model-initiated navigation, clicks, and fills. Only reviewed trusted workflows may act. The controller returns status only to model-UID callers.
 
 ### Generated credentials and motivating workflows
 
@@ -58,7 +59,7 @@ For Linear, use the OAuth manifest to prefill the form. The adapter captures cre
 
 RIG-6006 defines `SecretRef(scope, name)` and grants with an agent principal, purpose, mode, expiry, and uses. The browser-fill use includes an approved origin allowlist. The controller reads the origin from CDP and reports it to the broker. The broker checks it against the allowlist but has no independent view of the page. Origin integrity depends on the isolated controller. The controller calls `Redeem` and `CaptureGenerated` only through a browser-UID-only broker socket. Its credential is never written to a model-readable path. No Redeem API is available on `/run/compass/agent.sock` or another model-UID path. RIG-6006 is not merged; its design path is forthcoming: docs/designs/compass/server/compass-secret-broker/design.md.
 
-The model does not receive brokered values in tool results, transcripts, screenshots, logs, or diagnostics. The separate browser UID protects the profile, controller, and broker credential from model process tools. The controller returns status only after taint. These guarantees depend on UID/sandbox isolation and the browser-UID-only broker socket.
+The model does not receive brokered values in tool results, transcripts, screenshots, logs, or diagnostics. The controller fills only credential fields or grant-fixed workflow selectors. After taint, it refuses model-initiated navigation, clicks, and fills, so the model cannot publish a filled value through a page action. The separate browser UID protects the profile, controller, and broker credential from model process tools. These guarantees depend on UID/sandbox isolation and the browser-UID-only broker socket.
 
 The destination site, its page scripts, the browser process, the trusted controller, and a compromised runtime can still see values. An approved malicious site can use or exfiltrate them. The firewall cannot limit paths or application behavior on an allowed host.
 
@@ -70,7 +71,7 @@ The Runner tier firewall is the egress boundary. Operators approve login origins
 
 ### 2FA and headed interaction
 
-Add TOTP as a broker secret kind. The trusted runtime generates and types the codes; the model sees neither. For GitHub Mobile, send the non-credential two-digit match number to the human through the trusted Compass ask flow. Return only the yes/no answer and number selection to the runtime. Do not send them through model chat. SMS, passkeys, and hardware keys remain unsupported until trusted input exists. Do not show the headed browser to the model. Any human view needs separate authorization and must expose no screenshots or controls to the model.
+Add TOTP as a broker secret kind. The controller redeems the TOTP seed, generates the code, and types it. The model sees neither the seed nor code. For GitHub Mobile, send the non-credential two-digit match number to the human through the trusted Compass ask flow. The Server sends the human's yes/no answer and number selection to the controller over the browser-UID-only channel, never through model chat. SMS, passkeys, and hardware keys remain unsupported until trusted input exists. Do not show the headed browser to the model. Any human view needs separate authorization and must expose no screenshots or controls to the model.
 
 ### Audit
 
@@ -89,8 +90,10 @@ OMP's full Eval allows readback, and text redaction misses page data and images.
 - Use documented APIs first. Treat browser automation as fallback-only.
 - Run Chromium, CDP, and the broker client under a separate browser UID and sandbox. Do not let model tools read the profile or broker socket.
 - Disable OMP's browser Eval prelude unconditionally in code after fleet settings. Do not depend on the optional fleet overlay.
-- Taint the whole agent session before the first secret fill or credential capture. Keep it tainted through teardown and across context changes.
+- Require the controller to fill only password inputs or approved credential `autocomplete` fields. Allow a grant-fixed selector only for a vendor workflow.
+- After taint, refuse model-initiated navigation, clicks, and fills; only reviewed trusted workflows may act until teardown.
 - Require the Runner to launch the controller as the browser UID on every enabled tier. Keep the model-tool RPC on a session-scoped socket and the broker RPC on a separate browser-UID-only socket. Enforce taint and document bindings in the controller.
+- Require the controller to redeem TOTP seeds and generate and type codes. Send push-approval answers from the Server to the controller over the browser-UID-only channel.
 - Require the broker to check the origin reported by CDP against the grant allowlist. Origin integrity depends on the separate runtime boundary.
 - Enforce egress at the tier firewall. Allow browser hosts on TCP 443 only and DNS only to the resolver on port 53. Treat OMP `allowed_domains` as advisory. Require an armed firewall.
 - Store private per-session profiles at `/run/compass/browser/<agent-session>/profile`, mode 0700, owned by the browser UID, outside checkout and model-readable paths. Delete them at teardown. Bake pinned Chromium into the image and disable runtime downloads.
@@ -120,17 +123,17 @@ Sequence: T1 and T3 can start in parallel. T8 uses T3's browser UID and profile 
 
 **Lane:** compass Go server/runner; depends on T3.
 
-**Interfaces:** Runner launches one controller per agent session as the browser UID on every enabled tier. Controller RPC: `BrowserOpen(url) -> {context_id, document_id}`, `BrowserGoto(context_id, url) -> document_id`, `BrowserClick(context_id, document_id, selector) -> status`, `BrowserObserve(context_id, document_id) -> summary|status`, `BrowserFillSecret(context_id, document_id, grant_id, selector) -> status`, `BrowserCaptureVendorCredentials(context_id, document_id, grant_id, workflow) -> status`. Use a session-scoped Unix socket for model-tool RPC and a separate browser-UID-only broker socket. The controller owns context/document binding and taint state.
+**Interfaces:** Runner launches one controller per agent session as the browser UID on every enabled tier. Controller RPC: `BrowserOpen(url) -> {context_id, document_id}`, `BrowserGoto(context_id, url) -> document_id`, `BrowserClick(context_id, document_id, selector) -> status`, `BrowserObserve(context_id, document_id) -> summary|status`, `BrowserFillSecret(context_id, document_id, grant_id, selector) -> status`, `BrowserCaptureVendorCredentials(context_id, document_id, grant_id, workflow) -> status`. Fill accepts password inputs or `current-password`, `one-time-code`, and username-slot autocomplete fields; a vendor workflow may supply a grant-fixed selector. Use a session-scoped Unix socket for model-tool RPC and a separate browser-UID-only broker socket. The controller owns context/document binding and taint state.
 
-**Test cycle:** Verify the model UID cannot open the broker socket or read its credential, profile, or CDP pipe. Verify its process cannot redeem via `/run/compass/agent.sock` or another path. After taint, call controller RPC as model UID and confirm it returns status only, including across contexts and navigation.
+**Test cycle:** Verify the model UID cannot open the broker socket or read its credential, profile, or CDP pipe. Verify its process cannot redeem via `/run/compass/agent.sock` or another path. Reject secret fill into a non-credential target. After taint, verify model-UID click and goto calls are refused and return no page data.
 
 ### T2 — Restricted browser tools and vendor workflows
 
 **Lane:** compass-agent TS and OMP fork; depends on T1, T3, and T8.
 
-**Interfaces:** Model tools proxy controller RPC: `browser_open(url) -> {context_id, document_id}`; `browser_goto(context_id, url) -> document_id`; `browser_click(context_id, document_id, selector) -> status`; `browser_observe(context_id, document_id) -> summary|status`; `browser_fill_secret(context_id, document_id, grant_id, selector) -> status`; `browser_capture_vendor_credentials(context_id, document_id, grant_id, workflow: "github_app" | "linear_oauth_app") -> status`. No model-supplied capture selector or value. Enforce `browser.enabled: false` after fleet settings in code, not `buildFleetSettings`.
+**Interfaces:** Model tools proxy controller RPC: `browser_open(url) -> {context_id, document_id}`; `browser_goto(context_id, url) -> document_id`; `browser_click(context_id, document_id, selector) -> status`; `browser_observe(context_id, document_id) -> summary|status`; `browser_fill_secret(context_id, document_id, grant_id, selector) -> status`; `browser_capture_vendor_credentials(context_id, document_id, grant_id, workflow: "github_app" | "linear_oauth_app") -> status`. The controller accepts only credential fields or grant-fixed workflow selectors. No model-supplied capture selector or value. Enforce `browser.enabled: false` after fleet settings in code, not `buildFleetSettings`.
 
-**Test cycle:** With fleet settings absent and malformed, confirm the Eval browser prelude is disabled. Confirm model tools cannot read profile files, connect to broker socket, or expose `run`, `evaluate`, `value`, screenshot, HAR, or page-data output. Race navigation against redemption and confirm rejection. Verify GitHub conversion capture and fail-closed Linear selector changes. Verify controller taint persists through new tabs and contexts until teardown.
+**Test cycle:** With fleet settings absent and malformed, confirm the Eval browser prelude is disabled. Confirm model tools cannot read profile files, connect to the broker socket, or expose `run`, `evaluate`, `value`, screenshot, HAR, or page-data output. Reject non-credential fill targets. Race navigation against redemption and confirm rejection. Verify GitHub conversion capture and fail-closed Linear selector changes. After taint, refuse model-initiated goto, click, and fill. Verify only reviewed trusted workflows can act until teardown.
 
 ### T4 — Workload-wide HTTPS egress for browser hosts
 
@@ -150,11 +153,11 @@ Sequence: T1 and T3 can start in parallel. T8 uses T3's browser UID and profile 
 
 ### T6 — TOTP and supported human handoff
 
-**Lane:** compass Go server/runner and compass-agent TS; depends on T1 and T2.
+**Lane:** compass Go runner (controller) and compass server; depends on T1 and T2.
 
-**Interfaces:** `TotpSecretKind`; the runtime-only method `generateAndFillTotp(context_id, document_id, grant_id, selector) -> status`. The trusted prompt is `RequestPushApproval(agent_session_id, vendor, displayed_match_number?) -> {approved, selected_match_number?}`. Deliver the non-credential GitHub two-digit number to the human only. Send the answer directly to the trusted runtime, not model chat. Reject SMS, passkeys, and hardware keys without trusted input.
+**Interfaces:** `TotpSecretKind`; the controller-only method `GenerateAndFillTotp(context_id, document_id, grant_id, selector) -> status` redeems the seed, generates the code, and types it. The trusted prompt is `RequestPushApproval(agent_session_id, vendor, displayed_match_number?) -> {approved, selected_match_number?}`. The Server sends the human's answer to the controller over the browser-UID-only channel. Reject SMS, passkeys, and hardware keys without trusted input.
 
-**Test cycle:** Verify TOTP stays out of model results and logs. Verify the human sees the GitHub number and only the selected yes/no result reaches the trusted runtime. Reject unsupported challenges without chat leakage.
+**Test cycle:** Verify the TOTP seed and generated code stay out of model results and logs. Verify the human sees the GitHub number and the Server sends the yes/no answer only to the controller. Reject unsupported challenges without chat leakage.
 
 ### T7 — Cross-tier browser security and workflow tests
 
