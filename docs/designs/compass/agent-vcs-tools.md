@@ -644,6 +644,14 @@ nothing; an apply over either cap refuses.
 - [ ] T9 — remove jj-vine and narrow the token
 - [x] T10 — Server mirror and push
 
+Errata (as shipped):
+
+- T4: `forge_write_intents` lives in its own migration,
+  `go/internal/store/migrations/0004_forge_write_intents.sql`, not in
+  `0001_init.sql`.
+- T10: `Mirror.ApplyBundle` takes a `refs []string` argument (compass#2453),
+  so a bundle updates only the named heads.
+
 ## Future direction
 
 Out of scope; tracked in RIG-5665. Agents need not stay on git inside
