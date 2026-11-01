@@ -7,74 +7,96 @@ and tabit is deleted, so neither is a consumer this record waits on.
 Ledger-impact: [DL-647](decisions/go/DL-647.md) records the module contract:
 module path, tag scheme, the two public packages and the `tools` binaries.
 
-<!-- LENGTH §Plan: about 4,700 prose words; the Plan holds most of them as per-task Interfaces and parity rules that cheap executors read instead of re-reading the TypeScript sources -->
+<!-- LENGTH §Plan: about 5,500 prose words; the Plan holds most of them as per-task Interfaces, parity rules and quoted TS evidence that cheap executors read instead of re-reading the TypeScript sources -->
 
 ## Open Questions
 
 Matt rules on the RIG-5901 human-action issue. The plan follows each
-**Recommendation**. No question depends on another.
+**Recommendation**. No question depends on another. Citations name a symbol and
+a repository-relative path; meissa paths are at main `2b92002a544e`.
 
-1. **TSX and JSX parser for `commentscan`.** `jsx.ts` uses the `typescript`
-   compiler to find comment ranges. The TypeScript Go parser is internal and
-   cannot be imported.
+1. **TSX and JSX parser for `commentscan`.** `scanJsx` in
+   `packages/comment-scan/jsx.ts` parses with the `typescript` compiler and
+   fails closed on any parse diagnostic: "`if ((source.parseDiagnostics ??
+   []).length > 0) { return { residues: text.split("\n"), ambiguous: true };`".
+   The file header says why a char scanner is not enough: "in `<a>x//y</a>`
+   the `//` is JSX text". The TypeScript Go port keeps its parser under
+   `internal/parser` in microsoft/typescript-go, so Go code outside that module
+   cannot import it.
    - A: `github.com/odvcencio/gotreesitter` (pure Go, MIT). Import only its
-     standalone package `grammars/tsx`. A tree where `HasErrorOrMissing()` is
-     true sets `Ambiguous`, so a broken file fails closed.
-   - B: a hand-written TSX comment scanner. No dependency, but JSX text versus
-     comment detection is the exact case the TS comment says a char scanner
-     cannot do.
+     standalone package `grammars/tsx`. Its `(*Node).HasErrorOrMissing` in
+     `tree.go` "reports whether this node or a descendant contains an ERROR or
+     MISSING node. Use it for strict parse-health checks." A tree where it is
+     true sets `Ambiguous`, so a broken file fails closed as in `scanJsx`.
+   - B: a hand-written TSX comment scanner. No dependency, but it must solve
+     the JSX-text case above by hand.
    - C: keep a TS sidecar. This keeps Bun in every consumer.
    - **Recommendation:** A, with the corpus and broken-input checks in M2.
-2. **JavaScript regex engine for `ref-gate`.** Configs hold user-authored
-   JavaScript regexes. The public docs config uses a nested negative lookahead,
-   which RE2 cannot compile.
+2. **JavaScript regex engine for `ref-gate`.** `findViolations` in
+   `packages/ref-gate/index.ts` compiles each configured pattern as a
+   JavaScript regex: "`({ source, flags }) => new RegExp(source, flags)`". The
+   `patterns` list in RigelBuild/docs `ref-gate.config.json` holds a nested
+   negative lookahead, which RE2 cannot compile. (Not quoted here: the quote
+   would trip that gate.)
    - A: `github.com/dlclark/regexp2/v2` with the `ECMAScript` option (plus
-     `Unicode` for the `u` flag). Internal patterns still use stdlib `regexp`.
+     `Unicode` for the `u` flag). Its README maps that option to "The
+     ECMAScript specification, including the distinction between legacy
+     case-insensitive matching (`/i`) and Unicode case-insensitive matching
+     (`/iu`)". Internal patterns still use stdlib `regexp`.
    - B: RE2 only, and rewrite every consumer config. This breaks configs
      silently at the next bump.
    - **Recommendation:** A. A 2-second `MatchTimeout` and the backtracking
      stack limit both end in exit 2 with a named message, never a hang.
-3. **Go toolchain and `go` directive.** meissa's nixpkgs has `go` 1.26.10 as
-   default and `go_1_27` at 1.27.3. The house rule is the pinned toolchain minus
-   at most one minor.
+3. **Go toolchain and `go` directive.** In meissa's pinned nixpkgs,
+   `nix eval --inputs-from . nixpkgs#go.version` prints `1.26.10` and
+   `nixpkgs#go_1_27.version` prints `1.27.3`. The house rule is the pinned
+   toolchain minus at most one minor.
    - A: build with `go_1_27` (`buildGo127Module`), directive `go 1.26.0`.
      Importers on 1.26 and 1.27 both work.
-   - B: build with default `go`, directive `go 1.26.0`. Drifts from the
-     toolchain the consuming repositories pin.
+   - B: build with default `go`, directive `go 1.26.0`. This builds with an
+     older toolchain than the Go 1.27 that the house rule pins.
    - **Recommendation:** A.
-4. **A `comment-scan` binary.** The npm package has no `bin`. Its only consumer
-   imports the library.
+4. **A `comment-scan` binary.** `packages/comment-scan/package.json` declares
+   `"exports": "./index.ts"` and no `bin`, so every consumer imports it as a
+   library.
    - A: library only. M2 makes the tagged `commentscan` package available, and
      the flake `tools` package ships no `comment-scan` binary.
    - B: also ship a `comment-scan` CLI. This invents a CLI contract that no
      consumer asked for.
    - **Recommendation:** A.
-5. **`renovate-preflight`.** The meissa package has no live consumer: Compass is
-   archived, meissa's own Renovate workflow does not run it, and the private
-   consumer ships its own package of the same name.
+5. **`renovate-preflight`.** No consuming repository in RIG-5901 scope runs
+   this package, and meissa itself does not run it: neither
+   `.github/workflows/renovate.yml` nor the root `moon.yml` names it.
    - A: delete it without a port (M12), and deprecate it on npm in M16.
    - B: port it to Go and ship it in `tools`.
    - **Recommendation:** A.
-6. **npm deprecation timing and auth.** npm trusted publishing allows only
-   `npm stage publish`, `npm publish` and `npm dist-tag`. `npm deprecate` is
-   not an allowed action.
+6. **npm deprecation timing and auth.** npm's trusted-publishers page lists the
+   allowed actions: "`npm stage publish` is always allowed. Choose whether this
+   trusted publisher can also publish directly with `npm publish` or manage
+   dist-tags with `npm dist-tag`." `npm deprecate` is not one of them.
    - A: deprecate each retired package when its rows on the M16 checklist are
      done. Nemo runs one owner action with a short-lived granular token.
    - B: add a CI job with a long-lived granular npm token.
    - C: never deprecate.
    - **Recommendation:** A. No new standing secret.
 7. **RigelBuild/docs scope.** RIG-5901 names three repositories; RigelBuild/docs
-   is not one. It consumes `design-ledger-gate`, `dl-claim`, `ref-gate` and the
-   decision-file parser.
+   is not one. Its `package.json` scripts call the meissa CLIs (`"gate":
+   "design-ledger-gate --config design-ledger.config.json"`), and
+   `site/scripts/gather.ts` imports `parseDecisionFile` and
+   `renderDecisionIndex` from `@rigelbuild/design-ledger-gate/decision-files.ts`.
    - A: M15 swaps the three CLIs to `tools` and ports the TS files that import
      retiring packages: `site/scripts/gather.ts` (onto `ledger`), its test, and
      `site/scripts/ref-gate-config.test.ts`. `deploy.ts` stays TS for now.
    - B: M15 also ports `deploy.ts`.
    - C: docs stays on the last npm versions. This blocks deprecation.
-   - **Recommendation:** A. `deploy.ts` has no meissa dependency, and the site
-     keeps Bun for the Astro build and `wrangler` anyway.
-8. **Markdown parser for `length-gate`.** The TS gate counts prose words over an
-   mdast tree from `micromark` with GFM and YAML front matter.
+   - **Recommendation:** A. `site/scripts/deploy.ts` has one import,
+     `import { $ } from "bun";`, so no meissa dependency. The site keeps Bun
+     for the Astro build and `wrangler` anyway.
+8. **Markdown parser for `length-gate`.** `parseMarkdown` in
+   `packages/length-gate/core.ts` builds an mdast tree with
+   "`extensions: [gfm(), frontmatter(["yaml"])]`". goldmark's
+   `extension/gfm.go` enables only `Linkify`, `Table`, `Strikethrough` and
+   `TaskList`, so footnotes need `extension.Footnote` on top.
    - A: `github.com/yuin/goldmark` with its GFM extension, `extension.Footnote`,
      and `go.abhg.dev/goldmark/frontmatter` limited to YAML. The M10 node map
      fixes each known structural difference up front.
@@ -262,11 +284,12 @@ child processes.
 - **Type mapping:** each exported TS type becomes a Go struct with the same
   fields in Go case. A nullable field (`T | null`) becomes `mo.Option[T]`,
   except where an empty value is invalid by the TS contract; then it is the
-  zero value and the doc comment says so. A nullable return becomes `(T, bool)`.
-  A tagged union becomes a sealed interface with one struct per arm. A TS
-  `throw` becomes a returned `error`. Every type a task names is spelled out in
-  its Interfaces block; where a block says "the executor reads the TS", it
-  names the exact TS symbol.
+  zero value and the doc comment says so. An optional `RegExp` field or a
+  recursive config field becomes a pointer, `nil` for absent (M1b). A nullable
+  return becomes `(T, bool)`. A tagged union becomes a sealed interface with
+  one struct per arm. A TS `throw` becomes a returned `error`. Every type a
+  task names is spelled out in its Interfaces block; where a block says "the
+  executor reads the TS", it names the exact TS symbol.
 - **CLI contract:** same flags, env names, stdout and stderr lines and exit
   codes as the parity baseline. Exit 0 is pass, 1 is findings, 2 is usage,
   config or I/O error, unless the TS tool says otherwise.
@@ -295,9 +318,9 @@ child processes.
 - **Licenses:** a ported algorithm keeps its upstream notice in the file
   header. The line diff in `go/internal/linediff` is a port of jsdiff
   (BSD-3-Clause, Kevin Decker).
-- **Public prose:** this repository and RigelBuild/docs are public. Name the
-  private consumers only as "consuming repositories". A PR body never quotes
-  their code.
+- **Public prose:** this repository and RigelBuild/docs are public. Records
+  and PR bodies call any other repository "a consuming repository" and never
+  quote its code.
 - **Markdown:** every changed `.md` passes `rumdl check`.
 
 ### M1a: Go module, repository plumbing, `diff.go`
@@ -382,9 +405,58 @@ func CommentBlocks(text, ext string) (BlockScan, bool)
 func IsCgo(text string) bool
 ```
 
-`scan.ts` internals (`LangConfig`, `StringSpec`, `EscapeMode`, `ScanState`,
-`scanLines`, `scanComplete`) stay unexported; the executor reads those TS
-symbols directly.
+`packages/comment-scan/index.ts` re-exports the config type
+(`export type { LangConfig } from "./scan.ts";`), and `Segment` in `astro.ts`
+holds it (`lang: LangConfig;`). So `LangConfig`, the types its fields name
+(`StringSpec`, `EscapeMode`) and `ExprSpec` (the inline type of its `expr`
+field) are exported Go types under the Type mapping rule. The fields follow
+`export type LangConfig` and `export type StringSpec` in `scan.ts`, in the
+same order:
+
+```go
+type EscapeMode string // "backslash" "nix-indented" "doubled" "none"
+
+type StringSpec struct {
+    Open, Close   string
+    Escape        EscapeMode
+    Multiline     bool
+    Interpolation bool
+    InterpOpen    string      // "" means the default "${"
+    InterpClose   string      // "" means the default "}"
+    InterpLang    *LangConfig // nil keeps the enclosing language
+    CloseIsOpen   bool
+    OpenRe        *regexp.Regexp // "^"-anchored; matched on text[i:] (TS sticky /y)
+    OpenAfter     *regexp.Regexp // tested against the right-trimmed residue
+}
+
+type ExprSpec struct {
+    Open, Close string
+    Lang        *LangConfig
+}
+
+type LangConfig struct {
+    ID               LanguageID
+    LineComment      []string
+    LineCommentAfter *regexp.Regexp // nil means a line comment may start anywhere
+    BlockComment     bool
+    BlockOpen        string // "" means the default "/*"
+    BlockClose       string // "" means the default "*/"
+    NestBlock        bool
+    RustChar         bool
+    RegexLiteral     bool
+    Strings          []StringSpec
+    Expr             *ExprSpec      // nil means none
+    IndentScalar     *regexp.Regexp // nil means none
+    Heredoc          *regexp.Regexp // "^"-anchored; nil means none
+    Directive        *regexp.Regexp
+}
+```
+
+Optional regex and recursive fields are pointers, not `mo.Option`, because
+`nil` is the natural "absent" for these types and the scanner never copies
+them. A `""` default is valid only where the TS falls back to a default
+token. `ScanState`, `scanLines` and `scanComplete` stay unexported; the
+executor reads those TS symbols directly.
 
 ### M2: `commentscan` part 2, public API complete and tagged
 
@@ -402,9 +474,9 @@ Parity for TSX and Astro (meissa and RigelBuild/docs hold no `.tsx`, `.jsx` or
 `.astro` file):
 
 - **One-shot evidence:** run the TS-vs-Go `scanJsx` and `scanAstro` comparison
-  once over the consuming repositories' `.tsx` and `.astro` files. The PR body
-  gives counts only. Mismatch excerpts go on the RIG-5901 issue, never in the
-  public PR.
+  once over the `.tsx` and `.astro` files of the consuming repositories in
+  RIG-5901 scope. The PR body gives counts only. Mismatch excerpts go on the
+  RIG-5901 issue, never in the public PR.
 - **Committed corpus:** the TSX cases of tree-sitter-typescript's `test/corpus`
   (MIT) extracted to `.tsx` files, plus the `jsx.test.ts` and `astro.test.ts`
   edge cases expanded to whole files, with TS goldens.
@@ -457,7 +529,11 @@ type VerdictMismatch struct {
 }
 type VerdictMalformed struct{ Side, Reason string } // Side: "before" or "after"
 
-type Segment struct { Lang string; StartLine int; Lines []string }
+type Segment struct {
+    Lang      *LangConfig // the shared table entry; compare by pointer, read Lang.ID
+    StartLine int
+    Lines     []string
+}
 
 func ScanMarkdown(text string) MarkdownScan
 func MarkdownFingerprint(text string) []MarkdownItem
@@ -467,11 +543,23 @@ func ScanAstro(text string) Residues
 func SegmentAstro(text string) ([]Segment, bool)
 ```
 
-`ScanJSX` imports `github.com/odvcencio/gotreesitter/grammars/tsx` and needs
-no build tags. `Ambiguous` is set when `RootNode().HasErrorOrMissing()` is
-true. Comments matching `TS_DIRECTIVE` stay in the residue, as in the TS. The
-package doc says: an importer that builds with the `grammar_subset` tag must
-also set `grammar_subset_tsx`.
+`ScanJSX` copies `scanJsx` in `packages/comment-scan/jsx.ts` step by step:
+
+- Normalise CRLF first: "`text = text.replace(/\r\n/g, "\n");`".
+- A broken parse fails closed: "`return { residues: text.split("\n"),
+  ambiguous: true };`". In Go, that is the case when
+  `RootNode().HasErrorOrMissing()` is true.
+- Directive comments stay in the residue: "`return
+  !TS_DIRECTIVE.test(text.slice(range.pos, range.end));`".
+- Comment ranges are sorted by start, and a nested range is skipped: "`if
+  (range.pos < at) continue;`".
+- A removed comment keeps its newlines, so line numbers do not move.
+- Each residue line is right-trimmed of spaces and tabs only:
+  "`out.split("\n").map((line) => line.replace(/[ \t]+$/, ""))`".
+
+It imports `github.com/odvcencio/gotreesitter/grammars/tsx` and needs no build
+tags. The package doc says: an importer that builds with the `grammar_subset`
+tag must also set `grammar_subset_tsx`.
 
 ### M3: flake `tools` package and `ref-gate`
 
@@ -524,18 +612,30 @@ func GitGrep(ctx context.Context, root string, p Prefilter) ([]string, error)
 func Main(ctx context.Context, args []string, env func(string) string, stdout, stderr io.Writer) int
 ```
 
-Flag mapping, checked in `LoadConfig`:
+Flag mapping, checked in `LoadConfig`. The TS hands `flags` straight to
+`new RegExp(source, flags)` in `findViolations` and then runs
+"`pattern.lastIndex = 0; return pattern.test(matchText);`" for each hit.
 
 - `i` to `IgnoreCase`, `m` to `Multiline`, `s` to `Singleline`, `u` to
   `Unicode`.
-- `g` and `d` are accepted and change nothing. The TS resets `lastIndex` to 0
-  before each test, so `g` has no effect there either.
-- `y` (sticky) matches only at index 0: a hit counts only when
-  `match.Index == 0`.
+- `g` and `d` are accepted and change nothing. The `lastIndex = 0` reset above
+  means `g` has no effect in the TS either.
+- `y` (sticky) matches only at index 0, because of the same reset: a hit
+  counts only when `match.Index == 0`.
 - `v` is rejected with the `Invalid regular expression in patterns[N]:` prefix.
   This is a contract change: JavaScript accepts `v`. The README and the M3
   CHANGELOG entry state it.
 - Any other flag is rejected the same way.
+
+Ignore names: the TS builds "`new RegExp(escapeRegExp(name), "gi")`" for each
+non-empty `ignore` entry and removes every match with
+"`matchText = matchText.replace(ignoredName, "")`" before the pattern test.
+Go ports `escapeRegExp` as is (it escapes ``.*+?^${}()|[]\``), compiles with
+`ECMAScript|IgnoreCase`, and calls `Replace(text, "", -1, -1)`. A hit that
+does not parse fails with "`unparsable grep hit: ${JSON.stringify(line)}`".
+Go writes the line with a `json.Encoder` that has `SetEscapeHTML(false)`.
+U+2028, U+2029 and invalid UTF-8 still differ from `JSON.stringify`, so each
+gets a golden.
 
 Match failures: a `MatchTimeout` (2 seconds) or `regexp2.ErrBacktrackingStackLimit`
 ends the run with exit 2 and `ref-gate: patterns[N] <timed out | hit the
@@ -618,9 +718,31 @@ func ParseDecisionFile(path string, src []byte) (DecisionRow, error) // error is
 func RenderDecisionIndex(rows []DecisionRow) string
 ```
 
+`ParseDecisionFile` keeps the order of checks in `parseDecisionFile` in
+`packages/design-ledger-gate/decision-files.ts`, because the first failure is
+the reported reason:
+
+1. Strip one leading BOM and split on `\n`: "`text.replace(/^\uFEFF/,
+   "").split("\n")`".
+2. Line 1, right-trimmed, must be `---`, else line 1, "``file must start with
+   a `---` front-matter block``". No later `---` line gives line 1, "``
+   front-matter block is not closed with `---` ``".
+3. The block holds exactly four lines, `id`, `decision`, `status`, `record`
+   (`KEYS`), each matching "`/^([A-Za-z_]+): (.*)$/`" in that order.
+4. `decision` and `status` must match `QUOTED_RE` and are decoded with
+   `JSON.parse`. Go decodes with `json.Unmarshal` into a `string`, never
+   `strconv.Unquote`, which rejects the `\/` escape that `QUOTED_RE` allows.
+   A lone `\uD800`-range escape decodes to U+FFFD in Go but stays a lone
+   surrogate in JS; it gets a golden. Any other key fails on an empty value
+   or a first character in "``/^["'[{|>&*!%@`#]/``".
+5. `id` must match `ID_RE` and equal the `FILE_RE` capture of the base name,
+   then the `decision`, `status`, `record` and anchor checks follow.
+6. Last, the whole block must parse as YAML; the failure is
+   "`malformed YAML: ${String(error)}`".
+
 Every TS reason string is a golden. The record value is parsed with
 `go.yaml.in/yaml/v3`; its failure reason is the `malformed YAML:` prefix
-golden.
+golden, because the error text after it comes from a different parser.
 
 ### M6a: `design-ledger-gate` pure core
 
@@ -883,6 +1005,12 @@ Port the document half of `core.ts`: `proseWords`, `docMarker`,
 and without errata) and `docMarker` over the meissa `.md` files and the docs
 input set (Open Question 8).
 
+Word count: `proseWords` in `packages/length-gate/core.ts` strips one BOM
+("`markdown.replace(/^\uFEFF/u, "")`"), joins the prose blocks with `\n`, then
+runs "`.split(/\s+/u).filter((token) => /[\p{L}\p{N}]/u.test(token)).length`".
+Go uses `jstext.Fields` for the split and counts tokens that hold at least one
+rune in `unicode.L` or `unicode.N`.
+
 Parser setup: `goldmark.New` with `extension.GFM`, `extension.Footnote` and
 `&frontmatter.Extender{Formats: []frontmatter.Format{frontmatter.YAML}}`. The
 frontmatter default also accepts TOML `+++`, which the TS does not.
@@ -1008,12 +1136,18 @@ func repoRoot(t *testing.T) string // walks up from the test file to the directo
 ### M14: npm publish tool in Go, Bun leaves meissa
 
 Port `tools/release/publish.ts` and its test to `go/internal/npmpublish` and
-`go/cmd/npm-publish`. `release.yml` runs `go -C go run ./cmd/npm-publish`.
-Node stays on `PATH` for `npm publish`. Remove `bun` from `devenv.nix`, CI and
-`release.yml`; remove the root `package.json` workspaces, `bun.lock`,
-`bunfig.toml`, `tsconfig.base.json`, `tools/golden/capture.ts`, the `bun`
-Renovate manager and the `@types/bun` rules. Keep the `npm` manager for the two
-config packages.
+`go/cmd/npm-publish`. In `release.yml`, the step "Put Bun and Node.js on PATH"
+today builds `nixpkgs#bun nixpkgs#nodejs`. It becomes "Put Go and Node.js on
+PATH" and builds `.#go-dev nixpkgs#nodejs`, so the job uses the flake's pinned
+`go_1_27`, never a runner Go. Node stays for `npm publish` and trusted
+publishing. The step "Install workspace dependencies" is removed, and "Publish
+released packages" runs `go -C go run ./cmd/npm-publish` with the same
+`PUBLISH_ALL` env. Set `GOTOOLCHAIN=local`, `GOWORK=off` and
+`GOFLAGS=-mod=readonly` on that step. Remove `bun` from `devenv.nix` and CI;
+remove the root `package.json` workspaces, `bun.lock`, `bunfig.toml`,
+`tsconfig.base.json`, `tools/golden/capture.ts`, the `bun` Renovate manager
+and the `@types/bun` rules. Keep the `npm` manager for the two config
+packages.
 
 Interfaces (package `npmpublish`):
 
