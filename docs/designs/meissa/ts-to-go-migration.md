@@ -36,9 +36,9 @@ a repository-relative path; meissa paths are at main `2b92002a544e`.
 2. **JavaScript regex engine for `ref-gate`.** `findViolations` in
    `packages/ref-gate/index.ts` compiles each configured pattern as a
    JavaScript regex: "`({ source, flags }) => new RegExp(source, flags)`". The
-   `patterns` list in RigelBuild/docs `ref-gate.config.json` holds a nested
-   negative lookahead, which RE2 cannot compile. (Not quoted here: the quote
-   would trip that gate.)
+   `patterns[0].source` in RigelBuild/docs `ref-gate.config.json` ends in a
+   nested negative lookahead, "`(?!-ref-gate(?![\\w-]))`", which RE2 cannot
+   compile. (Only this fragment is quoted; the full pattern would trip the gate.)
    - A: `github.com/dlclark/regexp2/v2` with the `ECMAScript` option (plus
      `Unicode` for the `u` flag). Its README maps that option to "The
      ECMAScript specification, including the distinction between legacy
