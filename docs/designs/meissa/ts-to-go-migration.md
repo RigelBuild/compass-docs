@@ -20,9 +20,10 @@ a repository-relative path; meissa paths are at main `2b92002a544e`.
    fails closed on any parse diagnostic: "`if ((source.parseDiagnostics ??
    []).length > 0) { return { residues: text.split("\n"), ambiguous: true };`".
    The file header says why a char scanner is not enough: "in `<a>x//y</a>`
-   the `//` is JSX text". The TypeScript Go port keeps its parser under
-   `internal/parser` in microsoft/typescript-go, so Go code outside that module
-   cannot import it.
+   the `//` is JSX text". The TypeScript Go port keeps its parser at
+   `internal/parser/parser.go` in module `github.com/microsoft/typescript-go`
+   (its `go.mod`: "`module github.com/microsoft/typescript-go`"). Go forbids
+   importing an `internal/` package from outside its module.
    - A: `github.com/odvcencio/gotreesitter` (pure Go, MIT). Import only its
      standalone package `grammars/tsx`. Its `(*Node).HasErrorOrMissing` in
      `tree.go` "reports whether this node or a descendant contains an ERROR or
@@ -95,8 +96,9 @@ a repository-relative path; meissa paths are at main `2b92002a544e`.
 8. **Markdown parser for `length-gate`.** `parseMarkdown` in
    `packages/length-gate/core.ts` builds an mdast tree with
    "`extensions: [gfm(), frontmatter(["yaml"])]`". goldmark's
-   `extension/gfm.go` enables only `Linkify`, `Table`, `Strikethrough` and
-   `TaskList`, so footnotes need `extension.Footnote` on top.
+   `extension/gfm.go` enables only four extensions: "`Linkify.Extend(m)`,
+   `Table.Extend(m)`, `Strikethrough.Extend(m)`, `TaskList.Extend(m)`" in
+   `(*gfm).Extend`. So footnotes need `extension.Footnote` on top.
    - A: `github.com/yuin/goldmark` with its GFM extension, `extension.Footnote`,
      and `go.abhg.dev/goldmark/frontmatter` limited to YAML. The M10 node map
      fixes each known structural difference up front.
@@ -558,8 +560,9 @@ func SegmentAstro(text string) ([]Segment, bool)
   "`out.split("\n").map((line) => line.replace(/[ \t]+$/, ""))`".
 
 It imports `github.com/odvcencio/gotreesitter/grammars/tsx` and needs no build
-tags. The package doc says: an importer that builds with the `grammar_subset`
-tag must also set `grammar_subset_tsx`.
+tags. `grammars/tsx/tsx.go` carries
+"`//go:build !grammar_subset || grammar_subset_tsx`", so an importer that sets
+`grammar_subset` must also set `grammar_subset_tsx`.
 
 ### M3: flake `tools` package and `ref-gate`
 
